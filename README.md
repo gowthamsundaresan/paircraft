@@ -9,6 +9,24 @@ The repository currently provides the reproducible Python package, command-line,
 continuous-integration, and container foundation. It does not yet claim a validated
 sequence-to-magnetoresponse model.
 
+## Photocycle/readout model
+
+`paircraft.readout` implements the four-state phenomenological model from Ross, Lodesani,
+and Aiello (bioRxiv 2026.07.08.737352, equations 1-6 and supplementary equations 16-21).
+It numerically evolves ground, excited, singlet-radical-pair, and triplet-radical-pair
+populations and supplies the paper's analytical steady state and fluorescence observable.
+
+All kinetic rates and imposed singlet yields carry units, chemical state, structured citation
+chains, conditions, evidence status, and uncertainty status. Unverified locations in an
+originating source are explicit rather than guessed. The published default singlet yields are
+marked as assumed. The package does not derive a yield from a magnetic field, spin
+Hamiltonian, protein sequence, or structure; reproducing this readout layer is not a MagLOV2
+prediction.
+
+The publication does not provide machine-readable Supplemental Figure 1 values. Regression
+tests therefore check its stated numerical/analytical identity and mathematical limiting
+behavior instead of choosing tolerances from digitized plot points.
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)

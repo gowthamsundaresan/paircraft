@@ -17,7 +17,10 @@ classifiers = [
   "Programming Language :: Python :: 3.15",
   "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+  "numpy>=2.5.4",
+  "scipy>=1.18.1",
+]
 scripts.paircraft = "paircraft.cli:main"
 
 [dependency-groups]
@@ -30,6 +33,7 @@ dev = [
   "pytest>=8.4",
   "pytest-cov>=7",
   "ruff>=0.14",
+  "scipy-stubs>=1.18.1.1",
   "yamllint>=1.37",
 ]
 
