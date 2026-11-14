@@ -27,6 +27,22 @@ The publication does not provide machine-readable Supplemental Figure 1 values. 
 tests therefore check its stated numerical/analytical identity and mathematical limiting
 behavior instead of choosing tolerances from digitized plot points.
 
+## Spin-yield/readout interface
+
+`paircraft.coupling` projects externally supplied field-dependent singlet yields through the
+steady-state readout implementation. Every curve has one explicit spin-system/run identity;
+each sample retains a stable point ID, the full magnetic flux density **B** vector in tesla,
+coordinate-frame definition, covariance-aware field uncertainty, and the original yield
+provenance and uncertainty. A reference is selected by point ID, never by approximate field
+matching.
+
+The output is a steady-state readout projection with normalized population total 1.0. It keeps
+the exact input curve and readout rates and records calculated emission and relative fluorescence
+change separately. Readout conditions are derived from the exact provenance-bearing rate values;
+callers cannot attach a contradictory free-form condition. It does not run spin dynamics,
+interpolate fields, fit kinetics, propagate uncertainty without a declared joint model, or make a
+MagLOV2 or biological prediction.
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)
