@@ -66,6 +66,8 @@ development must use these same commands rather than equivalent variants.
 - Use SI units internally. Boundary adapters may accept domain units such as microtesla,
   millitesla, nanoseconds, or megahertz, but conversions must be explicit and tested.
 - Never silently mix magnetic field strength `H` with magnetic flux density `B`.
+- Never infer magnetic flux density `B` from coil current without a versioned, cited calibration;
+  preserve the instrument current as a separate control/readback quantity.
 - Never treat a best-fit parameter set as ground truth when the model is non-identifiable.
 - Never present retrospective fitting as prospective prediction.
 - Never use millitesla-range agreement alone to validate a sub-Earth-field claim.
@@ -79,6 +81,8 @@ development must use these same commands rather than equivalent variants.
 - Keep domain logic independent of notebooks, CLIs, storage, and external APIs.
 - Validate external data at ingestion boundaries and fail loudly on missing units or
   provenance.
+- Treat downloaded pickle/object-array payloads as opaque and unsafe by default; do not deserialize
+  them in the analysis process.
 - Make randomness explicit and seedable. Record model, code, data, and configuration versions
   for computational results.
 - Do not add abstractions or dependencies without a current caller.

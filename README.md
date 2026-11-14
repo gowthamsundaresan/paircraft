@@ -43,6 +43,24 @@ callers cannot attach a contradictory free-form condition. It does not run spin 
 interpolate fields, fit kinetics, propagate uncertainty without a declared joint model, or make a
 MagLOV2 or biological prediction.
 
+## Experimental traces
+
+`paircraft.experiments` provides an immutable, typed boundary for measured scalar traces. It
+currently reads the Oxford MARY scalar OME-TIFF/configuration/schedule format and Oxford
+key/value-header photodiode CSV files. Every trace retains exact content hashes, source versions,
+locations, licenses, sample and construct labels, processing class, observable, units, acquisition
+conditions, and magnetic-control current.
+
+The folded MFE analysis implements an explicit OFF/ON sign convention,
+`(I_on - I_off) / I_off`, and records its discard, steady-state, and spline-baseline configuration.
+Calculated results retain the executing algorithm/version and explicitly state that uncertainty is
+not calculated when no replicate hierarchy or joint error model is available.
+Magnet current is retained as amperes and is never presented as magnetic flux density **B** without
+a separate calibration. The reader refuses non-scalar TIFF frames, ambiguous terminal schedule
+events, object/pickled arrays, inconsistent frame counts, and derived traces passed as raw input.
+It does not segment cells, deserialize deposited pickle bundles, reproduce the unavailable QBI
+curve, or establish a low-field biological response.
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)

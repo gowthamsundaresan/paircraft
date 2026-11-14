@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
   "numpy>=2.5.4",
   "scipy>=1.18.1",
+  "tifffile>=2026.10.28",
 ]
 scripts.paircraft = "paircraft.cli:main"
 
