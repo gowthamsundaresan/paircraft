@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+workbench
+data
+artifacts
+outputs
+dist
+build
+__pycache__
+*.pyc
+.coverage
+htmlcov
+.mypy_cache
+.pytest_cache
+.ruff_cache

@@ -1,0 +1,29 @@
+# Private research, planning, and decision material
+/workbench/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Environments and builds
+.venv/
+dist/
+build/
+
+# Local data and generated results
+/data/
+/artifacts/
+/outputs/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
