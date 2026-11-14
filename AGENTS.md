@@ -83,6 +83,9 @@ development must use these same commands rather than equivalent variants.
   provenance.
 - Treat downloaded pickle/object-array payloads as opaque and unsafe by default; do not deserialize
   them in the analysis process.
+- Never treat deposited ROI-derived traces or a union mask as a raw-image segmentation
+  reproduction; preserve missing row-to-mask identity and unavailable preprocessing as explicit
+  limitations.
 - Make randomness explicit and seedable. Record model, code, data, and configuration versions
   for computational results.
 - Do not add abstractions or dependencies without a current caller.

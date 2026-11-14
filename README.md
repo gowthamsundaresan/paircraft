@@ -61,6 +61,14 @@ events, object/pickled arrays, inconsistent frame counts, and derived traces pas
 It does not segment cells, deserialize deposited pickle bundles, reproduce the unavailable QBI
 curve, or establish a low-field biological response.
 
+For the final Oxford Nature Figure 1c deposit, Paircraft safely ingests the authenticated 153x900
+processed single-cell trace matrix and reconstructs the illustratively selected row-40 display.
+It also reports a response-blind eligible-row distribution and verifies the same-acquisition
+pooled-versus-denominator-weighted identity. These are deposited ROI-derived traces: the final
+deposit has no raw images, individual row-to-mask mapping, or complete segmentation parameters.
+Paircraft therefore does not call this a raw segmentation reproduction or a biological-population
+estimate.
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)
@@ -93,6 +101,11 @@ uv build
 ```sh
 uv run paircraft --version
 uv run python -m paircraft --version
+uv run paircraft reproduce-oxford-fig1c \
+  --processed-npz data/public-inputs/experiments/payloads/oxford-v3/59258873_MFE_single_cell_data_0.npz \
+  --metadata data/public-inputs/experiments/payloads/oxford-v3/59258273_metadata.json \
+  --notebook data/public-inputs/experiments/payloads/oxford-v3/59258753_Fig1_PanelC.ipynb \
+  --output-dir outputs/oxford-fig1c
 ```
 
 ## Container
