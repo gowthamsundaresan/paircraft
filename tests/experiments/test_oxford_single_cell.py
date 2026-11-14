@@ -142,6 +142,46 @@ def test_processed_reader_refuses_object_arrays_without_deserializing(tmp_path: 
         )
 
 
+def test_processed_reader_refuses_complex_traces(tmp_path: Path) -> None:
+    processed, metadata, notebook, provenance = _write_source_fixture(tmp_path)
+    np.savez_compressed(
+        processed,
+        time_traces=np.ones((153, 900), dtype=np.complex64),
+        mask=np.ones((3200, 3200), dtype=np.bool_),
+        background=np.asarray(5.0),
+    )
+    provenance = replace(provenance, processed_traces=_source(processed, "complex"))
+
+    with pytest.raises(ValueError, match="finite real numeric"):
+        load_oxford_fig1c_processed_cells(
+            processed,
+            metadata,
+            notebook,
+            provenance=provenance,
+            construct_id="construct-maglov2-domain-aa",
+        )
+
+
+@pytest.mark.parametrize(("field", "value"), [("ImagesPerStep", 45.5), ("NumSteps", True)])
+def test_processed_reader_requires_integral_schedule_metadata(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    processed, metadata, notebook, provenance = _write_source_fixture(tmp_path)
+    document = json.loads(metadata.read_text(encoding="utf-8"))
+    document["Fig1_PanelC"][field] = value
+    metadata.write_text(json.dumps(document), encoding="utf-8")
+    provenance = replace(provenance, metadata=_source(metadata, "non-integral-metadata"))
+
+    with pytest.raises(ValueError, match=f"{field} must be a finite integral number"):
+        load_oxford_fig1c_processed_cells(
+            processed,
+            metadata,
+            notebook,
+            provenance=provenance,
+            construct_id="construct-maglov2-domain-aa",
+        )
+
+
 def test_single_cell_analysis_recovers_sign_and_pooled_identity() -> None:
     result = analyze_oxford_fig1c(_dataset())
 
@@ -192,17 +232,52 @@ def test_analysis_config_refuses_estimand_drift(kwargs: dict[str, Any], message:
 
 def test_report_writer_publishes_auditable_outputs_atomically(tmp_path: Path) -> None:
     result = analyze_oxford_fig1c(_dataset(invalid_row=0))
+    output_directory = tmp_path / "complete-report"
 
-    report_path, observations_path, markdown_path = write_oxford_fig1c_report(result, tmp_path)
+    report_path, observations_path, markdown_path = write_oxford_fig1c_report(
+        result, output_directory
+    )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["schema_version"] == "paircraft.oxford_fig1c_report.v1"
     assert report["inclusion_funnel"]["ineligible_deposited_rows"] == [0]
     assert report["claim_boundaries"]["raw_segmentation"].startswith("not_reproducible")
+    assert "does not weight E2" in report["estimand_definitions"]["E3"]
     assert observations_path.read_text(encoding="utf-8").count("\n") == 153 * 9 + 1
     markdown = markdown_path.read_text(encoding="utf-8").replace("\n", " ")
     assert "not a biological-population estimate" in markdown
-    assert not list(tmp_path.glob(".paircraft-fig1c-*"))
+    assert not list(tmp_path.glob(".complete-report-*"))
+
+
+def test_report_failure_cannot_expose_a_partial_output_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = analyze_oxford_fig1c(_dataset())
+    output_directory = tmp_path / "must-remain-absent"
+
+    def fail_csv(path: Path, analysis: object) -> None:
+        del path, analysis
+        raise RuntimeError("injected mid-staging failure")
+
+    monkeypatch.setattr(oxford_fig1c_report, "_write_observations_csv", fail_csv)
+    with pytest.raises(RuntimeError, match="injected mid-staging failure"):
+        write_oxford_fig1c_report(result, output_directory)
+
+    assert not output_directory.exists()
+    assert not list(tmp_path.glob(".must-remain-absent-*"))
+
+
+def test_report_writer_refuses_to_replace_an_existing_result(tmp_path: Path) -> None:
+    result = analyze_oxford_fig1c(_dataset())
+    output_directory = tmp_path / "existing-report"
+    output_directory.mkdir()
+    sentinel = output_directory / "sentinel.txt"
+    sentinel.write_text("preserve me", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        write_oxford_fig1c_report(result, output_directory)
+
+    assert sentinel.read_text(encoding="utf-8") == "preserve me"
 
 
 def test_authenticated_reproduction_runs_from_source_files(

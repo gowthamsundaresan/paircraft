@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -117,6 +118,17 @@ def _report_document(result: OxfordSingleCellAnalysisResult) -> dict[str, object
             },
         },
         "publication_display": asdict(result.publication_display),
+        "estimand_definitions": {
+            "E2": (
+                "median eligible technical-cycle ratio within each deposited row, followed by "
+                "a descriptive distribution over eligible rows"
+            ),
+            "E3": (
+                "pooled ratio over eligible cell-cycle numerators and denominators, identical to "
+                "the denominator-weighted eligible cell-cycle ratios; E3 does not weight E2 "
+                "per-cell medians"
+            ),
+        },
         "empirical_deposited_cell_distribution": asdict(distribution),
         "pooled_reconciliation": asdict(reconciliation),
         "inclusion_funnel": {
@@ -180,6 +192,9 @@ The approximately -50% value reconstructs one illustratively selected deposited 
 distribution describes eligible processed trace rows in this one deposited acquisition; it is not
 a biological-population estimate. {distribution.ineligible_cell_count} rows fail the response-blind
 requirement that the OFF-only spline baseline remain finite and positive across all retained frames.
+E2 first takes the median of nine technical-cycle ratios for each eligible cell row. E3 instead
+pools every eligible cell-cycle numerator and denominator and equals their denominator-weighted
+cell-cycle ratios; E3 is not calculated by weighting the E2 per-cell medians.
 
 ## Claim boundary
 
@@ -230,25 +245,35 @@ def _write_observations_csv(path: Path, result: OxfordSingleCellAnalysisResult) 
 def write_oxford_fig1c_report(
     result: OxfordSingleCellAnalysisResult, output_directory: Path
 ) -> tuple[Path, Path, Path]:
-    """Atomically publish JSON, observation CSV, and Markdown outputs."""
+    """Atomically reveal one complete report directory and refuse replacement."""
 
-    output_directory.mkdir(parents=True, exist_ok=True)
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    if output_directory.exists():
+        raise FileExistsError(f"report output directory already exists: {output_directory}")
     final_paths = (
         output_directory / "oxford-fig1c-report.json",
         output_directory / "oxford-fig1c-observations.csv",
         output_directory / "oxford-fig1c-report.md",
     )
-    with tempfile.TemporaryDirectory(prefix=".paircraft-fig1c-", dir=output_directory) as temp:
-        temporary_directory = Path(temp)
-        temporary_paths = tuple(temporary_directory / path.name for path in final_paths)
+    temporary_directory = Path(
+        tempfile.mkdtemp(prefix=f".{output_directory.name}-", dir=output_directory.parent)
+    )
+    temporary_paths = tuple(temporary_directory / path.name for path in final_paths)
+    try:
         temporary_paths[0].write_text(
             json.dumps(_report_document(result), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         _write_observations_csv(temporary_paths[1], result)
         temporary_paths[2].write_text(_markdown_report(result), encoding="utf-8")
-        for temporary_path, final_path in zip(temporary_paths, final_paths, strict=True):
-            os.replace(temporary_path, final_path)
+        if output_directory.exists():
+            raise FileExistsError(
+                f"report output directory appeared during staging: {output_directory}"
+            )
+        os.rename(temporary_directory, output_directory)
+    except BaseException:
+        shutil.rmtree(temporary_directory, ignore_errors=True)
+        raise
     return final_paths
 
 

@@ -39,6 +39,17 @@ def _stable_hash(payload: dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _require_integral_metadata(value: object, name: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not isfinite(float(value))
+        or float(value) != int(value)
+    ):
+        raise ValueError(f"{name} must be a finite integral number")
+    return int(value)
+
+
 @dataclass(frozen=True, slots=True)
 class OxfordFig1cProvenance:
     """Exact processed data, metadata, and publication notebook sources."""
@@ -188,6 +199,9 @@ class EmpiricalCellDistribution:
     count_at_or_below_minus_10_percent: int
     count_at_or_below_minus_25_percent: int
     count_at_or_below_minus_40_percent: int
+    estimand_definition: str = (
+        "E2: median cycle ratio within each cell, then distribution over cells"
+    )
     uncertainty_status: str = "descriptive_only_no_independent_biological_replicates"
 
 
@@ -200,6 +214,9 @@ class PooledReconciliation:
     absolute_identity_residual: float
     tolerance: float
     identity_passed: bool
+    estimand_definition: str = (
+        "E3: denominator-weighted eligible cell-cycle ratios; not E2 per-cell medians"
+    )
     residual_fluorescence_status: str = "not_available_from_deposited_roi_traces"
 
 
@@ -252,16 +269,21 @@ def load_oxford_fig1c_processed_cells(
 
     if traces.shape != _EXPECTED_TRACE_SHAPE or traces.dtype.hasobject:
         raise ValueError("time_traces must be a numeric non-object array with shape 153x900")
-    if not np.issubdtype(traces.dtype, np.number) or not np.isfinite(traces).all():
-        raise ValueError("time_traces must contain only finite numeric values")
+    if (
+        not np.issubdtype(traces.dtype, np.number)
+        or np.issubdtype(traces.dtype, np.complexfloating)
+        or not np.isfinite(traces).all()
+    ):
+        raise ValueError("time_traces must contain only finite real numeric values")
     if mask.shape != _EXPECTED_MASK_SHAPE or mask.dtype != np.bool_:
         raise ValueError("mask must be the deposited 3200x3200 boolean union mask")
     if (
         background.shape != ()
         or background.dtype.hasobject
         or not np.issubdtype(background.dtype, np.number)
+        or np.issubdtype(background.dtype, np.complexfloating)
     ):
-        raise ValueError("background must be one numeric scalar")
+        raise ValueError("background must be one real numeric scalar")
     background_value = float(background)
     if not isfinite(background_value):
         raise ValueError("background must be finite")
@@ -271,14 +293,17 @@ def load_oxford_fig1c_processed_cells(
         metadata = metadata_document["Fig1_PanelC"]
         if not isinstance(metadata, dict):
             raise TypeError
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("metadata must contain the exact Fig1_PanelC acquisition block") from error
+    try:
         sample_label = str(metadata["Sample"])
-        frames_per_state = int(metadata["ImagesPerStep"])
-        period_count = int(metadata["NumSteps"])
         exposure_seconds = float(metadata["ImageExposure_ms"]) / 1000.0
         magnet_current = float(metadata["MagnetCurrentA"])
         acquisition_date = str(metadata["date"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (KeyError, TypeError, ValueError) as error:
         raise ValueError("metadata must contain the exact Fig1_PanelC acquisition block") from error
+    frames_per_state = _require_integral_metadata(metadata.get("ImagesPerStep"), "ImagesPerStep")
+    period_count = _require_integral_metadata(metadata.get("NumSteps"), "NumSteps")
 
     if (
         sample_label != "ML 2"
