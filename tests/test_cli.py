@@ -74,3 +74,48 @@ def test_single_cell_reproduction_command_dispatches_authenticated_run(
         str(tmp_path / "result.csv"),
         str(tmp_path / "result.md"),
     ]
+
+
+def test_corpus_command_exposes_audited_boundaries(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["build-oxford-calibration-corpus", "--help"])
+    assert exit_info.value.code == 0
+    output = capsys.readouterr().out
+    assert all(
+        option in output
+        for option in ("--input-root", "--metadata", "--output-root", "--result-name")
+    )
+
+
+def test_corpus_command_dispatches_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from paircraft.experiments import oxford_corpus
+
+    destination = tmp_path / "outputs/results/corpus"
+
+    def fake_build(input_root: Path, metadata: Path, output_root: Path, result_name: str) -> Path:
+        assert input_root == Path("inputs")
+        assert metadata == Path("metadata.json")
+        assert output_root == tmp_path / "outputs"
+        assert result_name == "corpus"
+        return destination
+
+    monkeypatch.setattr(oxford_corpus, "build_oxford_calibration_corpus", fake_build)
+    assert (
+        main(
+            [
+                "build-oxford-calibration-corpus",
+                "--input-root",
+                "inputs",
+                "--metadata",
+                "metadata.json",
+                "--output-root",
+                str(tmp_path / "outputs"),
+                "--result-name",
+                "corpus",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == str(destination)

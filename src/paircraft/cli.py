@@ -30,6 +30,14 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument("--metadata", required=True, type=Path)
     reproduce.add_argument("--notebook", required=True, type=Path)
     reproduce.add_argument("--output-dir", required=True, type=Path)
+    corpus = subparsers.add_parser(
+        "build-oxford-calibration-corpus",
+        help="Build the audited Tier-D Oxford v3 descriptive corpus.",
+    )
+    corpus.add_argument("--input-root", required=True, type=Path)
+    corpus.add_argument("--metadata", required=True, type=Path)
+    corpus.add_argument("--output-root", required=True, type=Path)
+    corpus.add_argument("--result-name", required=True)
     return parser
 
 
@@ -50,6 +58,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for path in paths:
             print(path)
+        return 0
+    if args.command == "build-oxford-calibration-corpus":
+        from paircraft.experiments.oxford_corpus import build_oxford_calibration_corpus
+
+        destination = build_oxford_calibration_corpus(
+            cast(Path, args.input_root),
+            cast(Path, args.metadata),
+            cast(Path, args.output_root),
+            cast(str, args.result_name),
+        )
+        print(destination)
         return 0
 
     build_parser().print_help()

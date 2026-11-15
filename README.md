@@ -71,6 +71,12 @@ deposit has no raw images, individual row-to-mask mapping, or complete segmentat
 Paircraft therefore does not call this a raw segmentation reproduction or a biological-population
 estimate.
 
+The Oxford calibration-corpus command authenticates all five final-v3 MFE archives, freezes the
+descriptive transform before outcome access, and records every numeric read in a durable,
+hash-chained journal. It emits a compact Tier-D corpus with 644 anonymous deposited rows, their
+technical cycles, and frame-phase trajectories. The acquisitions are described separately: the
+corpus does not fit a model, create a holdout, establish biological replication, or rank variants.
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)
@@ -108,6 +114,11 @@ uv run paircraft reproduce-oxford-fig1c \
   --metadata data/public-inputs/experiments/payloads/oxford-v3/59258273_metadata.json \
   --notebook data/public-inputs/experiments/payloads/oxford-v3/59258753_Fig1_PanelC.ipynb \
   --output-dir outputs/oxford-fig1c
+uv run paircraft build-oxford-calibration-corpus \
+  --input-root data/public-inputs/experiments/payloads/oxford-v3 \
+  --metadata data/public-inputs/experiments/payloads/oxford-v3/59258273_metadata.json \
+  --output-root outputs/oxford-calibration \
+  --result-name corpus
 ```
 
 The output directory is published as one complete atomic unit and must not already exist. Paircraft

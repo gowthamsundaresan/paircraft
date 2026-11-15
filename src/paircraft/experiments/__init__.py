@@ -7,6 +7,13 @@ from paircraft.experiments.oxford import (
     load_oxford_mary_scalar_trace,
     load_oxford_photodiode_csv,
 )
+from paircraft.experiments.oxford_corpus import (
+    OXFORD_V3_ACQUISITIONS,
+    AcquisitionSpec,
+    AcquisitionSummary,
+    ExposureState,
+    build_oxford_calibration_corpus,
+)
 from paircraft.experiments.oxford_single_cell import (
     CellCycleObservation,
     CellSummary,
@@ -22,10 +29,14 @@ from paircraft.experiments.oxford_single_cell import (
 )
 
 __all__ = [
+    "OXFORD_V3_ACQUISITIONS",
+    "AcquisitionSpec",
+    "AcquisitionSummary",
     "CellCycleObservation",
     "CellSummary",
     "EmpiricalCellDistribution",
     "ExperimentalTrace",
+    "ExposureState",
     "MfeAnalysisConfig",
     "MfeAnalysisResult",
     "OxfordFig1cProvenance",
@@ -39,6 +50,7 @@ __all__ = [
     "TraceClass",
     "analyze_folded_mfe",
     "analyze_oxford_fig1c",
+    "build_oxford_calibration_corpus",
     "load_oxford_fig1c_processed_cells",
     "load_oxford_mary_scalar_trace",
     "load_oxford_photodiode_csv",
