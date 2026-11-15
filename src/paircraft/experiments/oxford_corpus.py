@@ -9,7 +9,10 @@ import hashlib
 import io
 import json
 import os
+import resource
 import shutil
+import stat
+import sys
 import tempfile
 import zipfile
 from collections import Counter
@@ -31,9 +34,42 @@ MINIMUM_FREE_BYTES: Final = 10 * 1024**3
 MAX_TRANSIENT_BYTES: Final = 128 * 1024**2
 MAX_SCRATCH_BYTES: Final = 512 * 1024**2
 MAX_OUTPUT_BYTES: Final = 128 * 1024**2
+MAX_RSS_BYTES: Final = 1024**3
 PRODUCTION_METADATA_SHA256: Final = (
     "a8f579e2335bcb5400a326f657527082ad73cbc8d2e1f264c628ef1ceabe48e"
 )
+FREEZE_SCHEMA_VERSION: Final = "paircraft.oxford_calibration.pre_read_freeze.v1"
+EVIDENCE_HASHES: Final = {
+    "provider_record": "6be769ae4c1e7455a1d000ea1098c0645f3f49061da0ca83dceb1b942ef75c80",
+    "inventory": "cd9849fef8eb0953c673c348a383db33d5c2747d2fd81f15295dec531769faf1",
+    "transformations": "3d45abcb678bf5ca91126f5cfa6c9b8b2222d2e21dc8998b8afbd5533c780f9f",
+    "metadata": PRODUCTION_METADATA_SHA256,
+    "utils": "fa75c1d898276c7f9b5aa4f8b0d2481fbd8a489e56bfc81ab1fc85ac68957e2d",
+    "fig1_notebook": "945861335b637891374ec1f1b181224d743388765f92d45775310b8fce6749d4",
+    "fig2_notebook": "f77ed78008ac562ad6dcb5abd2da9ea4c06572c92f1257bfae648a3141281ad5",
+    "alias_readme": "f79a3f4b5c556a98049e02753078a0d35ca66027821cd0f9b67937121892804c",
+    "zenodo_record": "4598cb049ebdd212b76a75b0cfd15da28700223f18f9aeb6b6d49d16be055f88",
+    "archive_members": "9ce861e895125ff8e8790596839026c1e604e6ab1da1c5494906e561e60d0e30",
+}
+
+
+def _verify_production_evidence(input_root: Path) -> None:
+    experiments_root = input_root.parent.parent
+    paths = {
+        "provider_record": experiments_root / "provider-records/oxford-30344995-v3.json",
+        "inventory": experiments_root / "inventory.jsonl",
+        "transformations": experiments_root / "transformations.jsonl",
+        "metadata": input_root / "59258273_metadata.json",
+        "utils": input_root / "59258276_utils.py",
+        "fig1_notebook": input_root / "59258753_Fig1_PanelC.ipynb",
+        "fig2_notebook": input_root / "59258738_Fig2.ipynb",
+        "alias_readme": input_root / "59258675_README.txt",
+        "zenodo_record": experiments_root / "provider-records/zenodo-14500235.json",
+        "archive_members": experiments_root / "archive-members.jsonl",
+    }
+    for identity, path in paths.items():
+        if not path.is_file() or _hash_file(path) != EVIDENCE_HASHES[identity]:
+            raise ValueError(f"bound_evidence_mismatch:{identity}")
 
 
 class ExposureState(StrEnum):
@@ -282,6 +318,31 @@ def _hash_file(path: Path, algorithm: str = "sha256") -> str:
     return digest.hexdigest()
 
 
+def _hash_handle(handle: BinaryIO, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
+    handle.seek(0)
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+    handle.seek(0)
+    return digest.hexdigest()
+
+
+@contextmanager
+def _open_pinned(path: Path) -> Iterator[BinaryIO]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("source_open_refused") from error
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("source_not_regular_file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            yield cast(BinaryIO, handle)
+    finally:
+        os.close(descriptor)
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
@@ -321,15 +382,14 @@ def _read_npy_header(handle: BinaryIO, name: str, member_size: int) -> NpyHeader
     )
 
 
-def preflight_npz(path: Path, spec: AcquisitionSpec) -> PreflightRecord:
-    """Authenticate an archive and inspect ZIP/NPY headers without numeric access."""
-
-    if _hash_file(path) != spec.sha256:
+def _preflight_open_npz(handle: BinaryIO, spec: AcquisitionSpec) -> PreflightRecord:
+    if _hash_handle(handle, "sha256") != spec.sha256:
         raise ValueError("source_sha256_mismatch")
-    if _hash_file(path, "md5") != spec.provider_md5:
+    if _hash_handle(handle, "md5") != spec.provider_md5:
         raise ValueError("provider_md5_mismatch")
     headers: list[NpyHeader] = []
-    with zipfile.ZipFile(path) as archive:
+    handle.seek(0)
+    with zipfile.ZipFile(handle) as archive:
         infos = archive.infolist()
         if {info.filename for info in infos} != EXPECTED_MEMBERS or len(infos) != 3:
             raise ValueError("unexpected_zip_members")
@@ -339,9 +399,9 @@ def preflight_npz(path: Path, spec: AcquisitionSpec) -> PreflightRecord:
             member_path = Path(info.filename)
             if info.flag_bits & 1 or member_path.is_absolute() or ".." in member_path.parts:
                 raise ValueError("unsafe_zip_member")
-            with archive.open(info) as handle:
+            with archive.open(info) as member_handle:
                 headers.append(
-                    _read_npy_header(cast(BinaryIO, handle), info.filename, info.file_size)
+                    _read_npy_header(cast(BinaryIO, member_handle), info.filename, info.file_size)
                 )
     by_name = {header.name: header for header in headers}
     expected = {
@@ -355,11 +415,18 @@ def preflight_npz(path: Path, spec: AcquisitionSpec) -> PreflightRecord:
             raise ValueError(f"invalid_npy_contract:{name}")
     return PreflightRecord(
         spec.acquisition_id,
-        path.stat().st_size,
+        os.fstat(handle.fileno()).st_size,
         spec.sha256,
         spec.provider_md5,
         tuple(sorted(headers, key=lambda header: header.name)),
     )
+
+
+def preflight_npz(path: Path, spec: AcquisitionSpec) -> PreflightRecord:
+    """Authenticate an archive and inspect ZIP/NPY headers without numeric access."""
+
+    with _open_pinned(path) as handle:
+        return _preflight_open_npz(handle, spec)
 
 
 def require_resource_budget(
@@ -369,6 +436,7 @@ def require_resource_budget(
     scratch_bytes: int,
     transient_bytes: int,
     free_bytes: int | None = None,
+    rss_bytes: int | None = None,
 ) -> None:
     """Refuse planned resource use outside the reviewed fixed budget."""
 
@@ -378,9 +446,19 @@ def require_resource_budget(
         raise ValueError("scratch_budget_exceeded")
     if persistent_bytes < 0 or persistent_bytes > MAX_TRANSIENT_BYTES:
         raise ValueError("persistent_output_budget_exceeded")
+    current_rss = current_rss_bytes() if rss_bytes is None else rss_bytes
+    if current_rss < 0 or current_rss > MAX_RSS_BYTES:
+        raise ValueError("rss_budget_exceeded")
     available = shutil.disk_usage(path).free if free_bytes is None else free_bytes
     if available < MINIMUM_FREE_BYTES + persistent_bytes + scratch_bytes:
         raise ValueError("free_space_reserve_breached")
+
+
+def current_rss_bytes() -> int:
+    """Return the process high-water RSS in bytes on supported Unix platforms."""
+
+    maximum = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return int(maximum if sys.platform == "darwin" else maximum * 1024)
 
 
 def validate_partitions(
@@ -569,15 +647,54 @@ def summarize_acquisition(
     )
 
 
+def _transform_contract() -> dict[str, object]:
+    return {
+        "transform_id": TRANSFORM_ID,
+        "discard_source_periods": 1,
+        "retained_anchor_indices": [43 + 90 * index for index in range(9)],
+        "spline_degree": 3,
+        "boundary_condition": "not-a-knot",
+        "extrapolate": True,
+        "late_on_indices": list(range(80, 90)),
+        "arithmetic_dtype": "float64",
+    }
+
+
+def _timing_contract() -> dict[str, object]:
+    return {
+        "timestamp_source": "nominal_metadata",
+        "exposure_duration_s": 0.2,
+        "state_duration_s": 10.0,
+        "frames_per_state": 45,
+        "uniform_slots_start_formula": "state_start_s + phase_index * (10/45)",
+        "contiguous_then_gap_start_formula": "state_start_s + phase_index * 0.2",
+        "gap_then_contiguous_start_formula": "state_start_s + 1 + phase_index * 0.2",
+    }
+
+
+def _resource_contract() -> dict[str, int]:
+    return {
+        "minimum_free_bytes": MINIMUM_FREE_BYTES,
+        "max_transient_bytes": MAX_TRANSIENT_BYTES,
+        "max_scratch_bytes": MAX_SCRATCH_BYTES,
+        "max_output_bytes": MAX_OUTPUT_BYTES,
+        "max_rss_bytes": MAX_RSS_BYTES,
+    }
+
+
 def freeze_document(
-    preflights: Sequence[PreflightRecord], exposures: Mapping[str, ExposureState]
+    preflights: Sequence[PreflightRecord],
+    exposures: Mapping[str, ExposureState],
+    *,
+    specs: Sequence[AcquisitionSpec],
 ) -> dict[str, object]:
     """Create the canonical outcome-blind Tier-D freeze document."""
 
     development = sorted(f"cg:{record.acquisition_id}" for record in preflights)
     validate_partitions(development, (), ())
     return {
-        "schema_version": "paircraft.oxford_calibration.pre_read_freeze.v1",
+        "schema_version": FREEZE_SCHEMA_VERSION,
+        "implementation_sha256": _hash_file(Path(__file__)),
         "feasibility_tier": "D_descriptive",
         "development_group_ids": development,
         "training_group_ids": [],
@@ -586,22 +703,71 @@ def freeze_document(
             asdict(record) for record in sorted(preflights, key=lambda item: item.acquisition_id)
         ],
         "exposures": {key: exposures[key].value for key in sorted(exposures)},
-        "transform": {
-            "transform_id": TRANSFORM_ID,
-            "discard_source_periods": 1,
-            "retained_anchor_indices": [43 + 90 * index for index in range(9)],
-            "spline_degree": 3,
-            "boundary_condition": "not-a-knot",
-            "extrapolate": True,
-            "late_on_indices": list(range(80, 90)),
-        },
-        "timing_realizations": [
-            "uniform_slots",
-            "contiguous_then_gap",
-            "gap_then_contiguous",
+        "acquisitions": [
+            {
+                "acquisition_id": spec.acquisition_id,
+                "source_id": spec.source_id,
+                "byte_id": spec.byte_id,
+                "provider_path": spec.provider_path,
+                "local_name": spec.local_name,
+                "provider_md5": spec.provider_md5,
+                "row_count": spec.row_count,
+                "construct_id": spec.construct_id,
+                "connected_group_id": spec.connected_group_id,
+            }
+            for spec in sorted(specs, key=lambda item: item.acquisition_id)
         ],
+        "transform": _transform_contract(),
+        "timing": _timing_contract(),
+        "resource_contract": _resource_contract(),
+        "bound_evidence_hashes": EVIDENCE_HASHES,
+        "source_graph_status": "not_reconciled_beyond_declared_connected_groups",
         "claim_boundary": "descriptive_only_no_model_fitting_or_variant_ranking",
     }
+
+
+def _validate_freeze_for_access(
+    document: Mapping[str, object], spec: AcquisitionSpec, preflight: PreflightRecord
+) -> None:
+    if document.get("schema_version") != FREEZE_SCHEMA_VERSION:
+        raise ValueError("freeze_schema_mismatch")
+    if document.get("feasibility_tier") != "D_descriptive":
+        raise ValueError("freeze_tier_mismatch")
+    if document.get("transform") != _transform_contract():
+        raise ValueError("freeze_transform_mismatch")
+    if document.get("implementation_sha256") != _hash_file(Path(__file__)):
+        raise ValueError("freeze_implementation_mismatch")
+    if document.get("timing") != _timing_contract():
+        raise ValueError("freeze_timing_mismatch")
+    if document.get("resource_contract") != _resource_contract():
+        raise ValueError("freeze_resource_contract_mismatch")
+    if document.get("bound_evidence_hashes") != EVIDENCE_HASHES:
+        raise ValueError("freeze_evidence_identity_mismatch")
+    if document.get("source_graph_status") != "not_reconciled_beyond_declared_connected_groups":
+        raise ValueError("freeze_graph_status_mismatch")
+    groups = document.get("development_group_ids")
+    if not isinstance(groups, list) or spec.connected_group_id not in groups:
+        raise ValueError("freeze_development_group_missing")
+    if document.get("training_group_ids") != [] or document.get("holdout_group_ids") != []:
+        raise ValueError("freeze_partition_mismatch")
+    acquisitions = document.get("acquisitions")
+    expected_acquisition = {
+        "acquisition_id": spec.acquisition_id,
+        "source_id": spec.source_id,
+        "byte_id": spec.byte_id,
+        "provider_path": spec.provider_path,
+        "local_name": spec.local_name,
+        "provider_md5": spec.provider_md5,
+        "row_count": spec.row_count,
+        "construct_id": spec.construct_id,
+        "connected_group_id": spec.connected_group_id,
+    }
+    if not isinstance(acquisitions, list) or expected_acquisition not in acquisitions:
+        raise ValueError("freeze_acquisition_identity_mismatch")
+    preflights = document.get("preflights")
+    expected_preflight = json.loads(_canonical_bytes(asdict(preflight)))
+    if not isinstance(preflights, list) or expected_preflight not in preflights:
+        raise ValueError("freeze_preflight_identity_mismatch")
 
 
 def persist_freeze(output_root: Path, document: Mapping[str, object]) -> tuple[str, Path]:
@@ -648,31 +814,78 @@ def _exclusive_lock(path: Path) -> Iterator[None]:
 def read_access_journal(path: Path) -> tuple[dict[str, object], ...]:
     """Validate and return a complete hash-chained journal."""
 
-    if not path.exists():
+    head_path = path.with_name("outcome-access.head.json")
+    if not path.exists() and not head_path.exists():
         return ()
+    if not path.is_file() or not head_path.is_file():
+        raise ValueError("outcome_access_journal_head_mismatch")
+    raw = path.read_bytes()
+    if not raw or not raw.endswith(b"\n"):
+        raise ValueError("invalid_outcome_access_journal_tail")
     events: list[dict[str, object]] = []
     previous: str | None = None
-    with path.open(encoding="utf-8") as handle:
-        for sequence, line in enumerate(handle):
-            try:
-                event = cast(dict[str, object], json.loads(line))
-            except json.JSONDecodeError as error:
-                raise ValueError("invalid_outcome_access_journal") from error
-            claimed_hash = event.pop("event_sha256", None)
-            if event.get("sequence") != sequence or event.get("previous_event_sha256") != previous:
-                raise ValueError("invalid_outcome_access_journal_chain")
-            actual_hash = _stable_hash(event)
-            if claimed_hash != actual_hash:
-                raise ValueError("invalid_outcome_access_journal_hash")
-            event["event_sha256"] = actual_hash
-            events.append(event)
-            previous = actual_hash
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError("invalid_outcome_access_journal") from error
+    for sequence, line in enumerate(lines):
+        try:
+            event = cast(dict[str, object], json.loads(line))
+        except json.JSONDecodeError as error:
+            raise ValueError("invalid_outcome_access_journal") from error
+        claimed_hash = event.pop("event_sha256", None)
+        if event.get("sequence") != sequence or event.get("previous_event_sha256") != previous:
+            raise ValueError("invalid_outcome_access_journal_chain")
+        actual_hash = _stable_hash(event)
+        if claimed_hash != actual_hash:
+            raise ValueError("invalid_outcome_access_journal_hash")
+        event["event_sha256"] = actual_hash
+        events.append(event)
+        previous = actual_hash
+    try:
+        head = cast(dict[str, object], json.loads(head_path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("invalid_outcome_access_journal_head") from error
+    expected_head = {
+        "schema_version": "paircraft.outcome_access_head.v1",
+        "last_sequence": len(events) - 1,
+        "last_event_sha256": previous,
+        "event_count": len(events),
+    }
+    if head != expected_head:
+        raise ValueError("outcome_access_journal_head_mismatch")
     return tuple(events)
+
+
+def _persist_journal_head(access_directory: Path, event_count: int, event_hash: str) -> None:
+    head = {
+        "schema_version": "paircraft.outcome_access_head.v1",
+        "last_sequence": event_count - 1,
+        "last_event_sha256": event_hash,
+        "event_count": event_count,
+    }
+    target = access_directory / "outcome-access.head.json"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".access-head-", dir=access_directory)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(_canonical_bytes(head) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+        directory_descriptor = os.open(access_directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
 
 
 def append_access_event(
     output_root: Path,
     spec: AcquisitionSpec,
+    preflight: PreflightRecord,
     freeze_sha256: str,
     *,
     run_id: str,
@@ -685,6 +898,11 @@ def append_access_event(
         or hashlib.sha256(freeze_path.read_bytes()).hexdigest() != freeze_sha256
     ):
         raise ValueError("durable_pre_read_freeze_missing")
+    try:
+        freeze = cast(dict[str, object], json.loads(freeze_path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("invalid_pre_read_freeze") from error
+    _validate_freeze_for_access(freeze, spec, preflight)
     access_directory = output_root / "access"
     access_directory.mkdir(parents=True, exist_ok=True)
     journal = access_directory / "outcome-access.jsonl"
@@ -717,17 +935,19 @@ def append_access_event(
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+        _persist_journal_head(access_directory, len(events) + 1, cast(str, event["event_sha256"]))
         return event
 
 
-def _read_numeric_members(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
-    with zipfile.ZipFile(path) as archive:
-        with archive.open("time_traces.npy") as handle:
-            traces = np.lib.format.read_array(handle, allow_pickle=False)
-        with archive.open("mask.npy") as handle:
-            mask = np.lib.format.read_array(handle, allow_pickle=False)
-        with archive.open("background.npy") as handle:
-            background_array = np.lib.format.read_array(handle, allow_pickle=False)
+def _read_numeric_members(handle: BinaryIO) -> tuple[np.ndarray, np.ndarray, float]:
+    handle.seek(0)
+    with zipfile.ZipFile(handle) as archive:
+        with archive.open("time_traces.npy") as member_handle:
+            traces = np.lib.format.read_array(member_handle, allow_pickle=False)
+        with archive.open("mask.npy") as member_handle:
+            mask = np.lib.format.read_array(member_handle, allow_pickle=False)
+        with archive.open("background.npy") as member_handle:
+            background_array = np.lib.format.read_array(member_handle, allow_pickle=False)
     background = float(background_array)
     if not isfinite(background):
         raise ValueError("nonfinite_background")
@@ -742,20 +962,29 @@ def read_admitted_arrays(
     freeze_sha256: str,
     *,
     run_id: str,
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float, dict[str, object]]:
     """Reauthenticate, journal, then and only then open numeric members."""
 
     output_root.mkdir(parents=True, exist_ok=True)
-    if preflight != preflight_npz(path, spec):
-        raise ValueError("preflight_state_changed")
-    require_resource_budget(
-        output_root,
-        persistent_bytes=0,
-        scratch_bytes=0,
-        transient_bytes=sum(header.numeric_bytes for header in preflight.headers),
-    )
-    append_access_event(output_root, spec, freeze_sha256, run_id=run_id)
-    return _read_numeric_members(path)
+    with _open_pinned(path) as handle:
+        actual_preflight = _preflight_open_npz(handle, spec)
+        if preflight != actual_preflight:
+            raise ValueError("preflight_state_changed")
+        require_resource_budget(
+            output_root,
+            persistent_bytes=0,
+            scratch_bytes=0,
+            transient_bytes=sum(header.numeric_bytes for header in preflight.headers),
+        )
+        event = append_access_event(output_root, spec, preflight, freeze_sha256, run_id=run_id)
+        traces, mask, background = _read_numeric_members(handle)
+        require_resource_budget(
+            output_root,
+            persistent_bytes=0,
+            scratch_bytes=0,
+            transient_bytes=sum(header.numeric_bytes for header in preflight.headers),
+        )
+        return traces, mask, background, event
 
 
 def _protocol_record(metadata: Mapping[str, object], spec: AcquisitionSpec) -> dict[str, object]:
@@ -877,6 +1106,8 @@ def build_oxford_calibration_corpus(
     if not result_name or result_name in {".", ".."} or Path(result_name).name != result_name:
         raise ValueError("invalid_result_name")
     output_root.mkdir(parents=True, exist_ok=True)
+    if tuple(specs) == OXFORD_V3_ACQUISITIONS:
+        _verify_production_evidence(input_root)
     require_resource_budget(
         output_root,
         persistent_bytes=MAX_OUTPUT_BYTES,
@@ -898,7 +1129,9 @@ def build_oxford_calibration_corpus(
         group = cast(str, event["connected_group_id"])
         if group in exposures:
             exposures[group] = join_exposure(exposures[group], ExposureState.OUTCOME_INSPECTED)
-    freeze_sha256, freeze_path = persist_freeze(output_root, freeze_document(preflights, exposures))
+    freeze_sha256, freeze_path = persist_freeze(
+        output_root, freeze_document(preflights, exposures, specs=specs)
+    )
     run_id = _stable_hash({"freeze": freeze_sha256, "result": result_name})[:16]
     results_root = output_root / "results"
     results_root.mkdir(parents=True, exist_ok=True)
@@ -925,7 +1158,7 @@ def build_oxford_calibration_corpus(
                     scratch_bytes=MAX_SCRATCH_BYTES,
                     transient_bytes=sum(header.numeric_bytes for header in preflight.headers),
                 )
-                traces, mask, background = read_admitted_arrays(
+                traces, mask, background, access_event = read_admitted_arrays(
                     paths[spec.acquisition_id],
                     spec,
                     preflight,
@@ -955,14 +1188,13 @@ def build_oxford_calibration_corpus(
                 summaries.append(summary)
                 for record in _trajectory_records(spec, trajectory_values):
                     trajectory_handle.write(_canonical_bytes(record).decode() + "\n")
-                events = read_access_journal(journal)
                 artifacts.append(
                     {
                         "acquisition_id": spec.acquisition_id,
                         "source_id": spec.source_id,
                         "byte_id": spec.byte_id,
                         "provider_path": spec.provider_path,
-                        "access_event_id": events[-1]["event_id"],
+                        "access_event_id": access_event["event_id"],
                         "background": background,
                         "background_unit": "deposited_camera_count",
                         "union_mask_shape": list(mask.shape),

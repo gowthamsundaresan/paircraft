@@ -45,8 +45,16 @@ def _fixture_spec(path: Path, *, rows: int = 1) -> AcquisitionSpec:
     )
 
 
-def _write_npz(path: Path, *, rows: int = 1, extra: bool = False, dtype: Any = np.float32) -> None:
-    signal = np.tile(np.concatenate((np.full(45, 100), np.full(45, 80))), 10)
+def _write_npz(
+    path: Path,
+    *,
+    rows: int = 1,
+    extra: bool = False,
+    dtype: Any = np.float32,
+    off_value: float = 100,
+    on_value: float = 80,
+) -> None:
+    signal = np.tile(np.concatenate((np.full(45, off_value), np.full(45, on_value))), 10)
     arrays: dict[str, np.ndarray] = {
         "time_traces": np.tile(signal, (rows, 1)).astype(dtype),
         "mask": np.zeros((3200, 3200), dtype=np.bool_),
@@ -209,12 +217,14 @@ def test_freeze_precedes_hash_chained_access_and_corruption_refuses(tmp_path: Pa
     preflight = oxford_corpus.PreflightRecord(
         spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
     )
-    document = freeze_document([preflight], {spec.connected_group_id: spec.initial_exposure})
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
     digest, freeze_path = persist_freeze(tmp_path, document)
     assert hashlib.sha256(freeze_path.read_bytes()).hexdigest() == digest
 
-    first = append_access_event(tmp_path, spec, digest, run_id="run")
-    second = append_access_event(tmp_path, spec, digest, run_id="run")
+    first = append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+    second = append_access_event(tmp_path, spec, preflight, digest, run_id="run")
     journal = tmp_path / "access" / "outcome-access.jsonl"
     events = read_access_journal(journal)
     assert len(events) == 2
@@ -229,12 +239,133 @@ def test_freeze_precedes_hash_chained_access_and_corruption_refuses(tmp_path: Pa
         read_access_journal(journal)
 
 
+@pytest.mark.parametrize("damage", ["missing_newline", "whole_tail_event"])
+def test_journal_head_detects_tail_loss(tmp_path: Path, damage: str) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    digest, _ = persist_freeze(tmp_path, document)
+    append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+    append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+    journal = tmp_path / "access/outcome-access.jsonl"
+    raw = journal.read_bytes()
+    if damage == "missing_newline":
+        journal.write_bytes(raw[:-1])
+        expected = "journal_tail"
+    else:
+        journal.write_bytes(raw.splitlines(keepends=True)[0])
+        expected = "journal_head_mismatch"
+    with pytest.raises(ValueError, match=expected):
+        read_access_journal(journal)
+
+
+def test_content_address_alone_cannot_authorize_outcome_access(tmp_path: Path) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    digest, _ = persist_freeze(tmp_path, {})
+    with pytest.raises(ValueError, match="freeze_schema_mismatch"):
+        append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("tier", "freeze_tier_mismatch"),
+        ("transform", "freeze_transform_mismatch"),
+        ("implementation", "freeze_implementation_mismatch"),
+        ("timing", "freeze_timing_mismatch"),
+        ("resources", "freeze_resource_contract_mismatch"),
+        ("evidence", "freeze_evidence_identity_mismatch"),
+        ("graph", "freeze_graph_status_mismatch"),
+        ("development", "freeze_development_group_missing"),
+        ("partition", "freeze_partition_mismatch"),
+        ("acquisition", "freeze_acquisition_identity_mismatch"),
+        ("preflight", "freeze_preflight_identity_mismatch"),
+    ],
+)
+def test_freeze_semantics_are_authorization_not_merely_content_address(
+    tmp_path: Path, mutation: str, reason: str
+) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    replacements: dict[str, tuple[str, object]] = {
+        "tier": ("feasibility_tier", "V_unseen_variant"),
+        "transform": ("transform", {}),
+        "implementation": ("implementation_sha256", "0" * 64),
+        "timing": ("timing", {}),
+        "resources": ("resource_contract", {}),
+        "evidence": ("bound_evidence_hashes", {}),
+        "graph": ("source_graph_status", "reconciled"),
+        "development": ("development_group_ids", []),
+        "partition": ("holdout_group_ids", [spec.connected_group_id]),
+        "acquisition": ("acquisitions", []),
+        "preflight": ("preflights", []),
+    }
+    key, value = replacements[mutation]
+    document[key] = value
+    digest, _ = persist_freeze(tmp_path, document)
+    with pytest.raises(ValueError, match=reason):
+        append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+
+
+def test_bound_production_evidence_is_verified_from_exact_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_root = tmp_path / "experiments/payloads/oxford-v3"
+    provider_root = tmp_path / "experiments/provider-records"
+    input_root.mkdir(parents=True)
+    provider_root.mkdir(parents=True)
+    paths = {
+        "provider_record": provider_root / "oxford-30344995-v3.json",
+        "inventory": tmp_path / "experiments/inventory.jsonl",
+        "transformations": tmp_path / "experiments/transformations.jsonl",
+        "metadata": input_root / "59258273_metadata.json",
+        "utils": input_root / "59258276_utils.py",
+        "fig1_notebook": input_root / "59258753_Fig1_PanelC.ipynb",
+        "fig2_notebook": input_root / "59258738_Fig2.ipynb",
+        "alias_readme": input_root / "59258675_README.txt",
+        "zenodo_record": provider_root / "zenodo-14500235.json",
+        "archive_members": tmp_path / "experiments/archive-members.jsonl",
+    }
+    for identity, path in paths.items():
+        path.write_text(identity, encoding="utf-8")
+    hashes = {
+        identity: hashlib.sha256(path.read_bytes()).hexdigest() for identity, path in paths.items()
+    }
+    monkeypatch.setattr(oxford_corpus, "EVIDENCE_HASHES", hashes)
+    verifier = cast(Any, oxford_corpus._verify_production_evidence)
+    verifier(input_root)
+    paths["inventory"].write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="bound_evidence_mismatch:inventory"):
+        verifier(input_root)
+
+
 def test_access_and_partition_guards_refuse_before_use(tmp_path: Path) -> None:
     source = tmp_path / "identity.npz"
     source.write_bytes(b"fixture")
     spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
     with pytest.raises(ValueError, match="durable_pre_read_freeze_missing"):
-        append_access_event(tmp_path, spec, "0" * 64, run_id="run")
+        append_access_event(tmp_path, spec, preflight, "0" * 64, run_id="run")
     with pytest.raises(ValueError, match="connected_group_partition_overlap"):
         validate_partitions(["cg:one"], [], ["cg:one"])
     with pytest.raises(ValueError, match="connected_component_partition_overlap"):
@@ -270,6 +401,14 @@ def test_resource_budget_includes_threshold_and_all_caps(
             scratch_bytes=0,
             transient_bytes=oxford_corpus.MAX_TRANSIENT_BYTES + 1,
         )
+    with pytest.raises(ValueError, match="rss_budget_exceeded"):
+        require_resource_budget(
+            tmp_path,
+            persistent_bytes=0,
+            scratch_bytes=0,
+            transient_bytes=0,
+            rss_bytes=oxford_corpus.MAX_RSS_BYTES + 1,
+        )
 
 
 def test_guarded_reader_never_opens_early_and_journal_survives_failure(
@@ -279,10 +418,10 @@ def test_guarded_reader_never_opens_early_and_journal_survives_failure(
     _write_npz(path)
     spec = _fixture_spec(path)
     preflight = preflight_npz(path, spec)
-    opened: list[Path] = []
+    opened: list[bool] = []
 
-    def fail_after_event(source: Path) -> tuple[np.ndarray, np.ndarray, float]:
-        opened.append(source)
+    def fail_after_event(source: object) -> tuple[np.ndarray, np.ndarray, float]:
+        opened.append(True)
         raise RuntimeError("injected numeric-open failure")
 
     monkeypatch.setattr(oxford_corpus, "_read_numeric_members", fail_after_event)
@@ -290,12 +429,67 @@ def test_guarded_reader_never_opens_early_and_journal_survives_failure(
         read_admitted_arrays(path, spec, preflight, tmp_path / "out", "0" * 64, run_id="run")
     assert opened == []
 
-    document = freeze_document([preflight], {spec.connected_group_id: spec.initial_exposure})
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
     digest, _ = persist_freeze(tmp_path / "out", document)
     with pytest.raises(RuntimeError, match="numeric-open failure"):
         read_admitted_arrays(path, spec, preflight, tmp_path / "out", digest, run_id="run")
-    assert opened == [path]
+    assert opened == [True]
     assert len(read_access_journal(tmp_path / "out/access/outcome-access.jsonl")) == 1
+
+
+def test_guarded_reader_pins_authenticated_descriptor_across_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "fixture.npz"
+    replacement = tmp_path / "replacement.npz"
+    _write_npz(path, off_value=100, on_value=80)
+    _write_npz(replacement, off_value=300, on_value=200)
+    spec = _fixture_spec(path)
+    preflight = preflight_npz(path, spec)
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    output = tmp_path / "out"
+    digest, _ = persist_freeze(output, document)
+    original_append = oxford_corpus.append_access_event
+
+    def append_then_swap(*args: Any, **kwargs: Any) -> dict[str, object]:
+        event = original_append(*args, **kwargs)
+        replacement.replace(path)
+        return event
+
+    monkeypatch.setattr(oxford_corpus, "append_access_event", append_then_swap)
+    traces, _, _, event = read_admitted_arrays(path, spec, preflight, output, digest, run_id="run")
+    assert traces[0, 0] == pytest.approx(100)
+    assert event["source_id"] == spec.source_id
+
+
+def test_guarded_reader_returns_its_event_not_concurrent_journal_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "fixture.npz"
+    _write_npz(path)
+    spec = _fixture_spec(path)
+    preflight = preflight_npz(path, spec)
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    output = tmp_path / "out"
+    digest, _ = persist_freeze(output, document)
+    original_append = oxford_corpus.append_access_event
+
+    def append_with_competing_writer(*args: Any, **kwargs: Any) -> dict[str, object]:
+        own_event = original_append(*args, **kwargs)
+        original_append(*args, **kwargs)
+        return own_event
+
+    monkeypatch.setattr(oxford_corpus, "append_access_event", append_with_competing_writer)
+    _, _, _, own_event = read_admitted_arrays(path, spec, preflight, output, digest, run_id="run")
+    events = read_access_journal(output / "access/outcome-access.jsonl")
+    assert own_event["event_id"] == events[0]["event_id"]
+    assert own_event["event_id"] != events[-1]["event_id"]
 
 
 def test_atomic_compact_build_and_post_event_failure_cleanup(
