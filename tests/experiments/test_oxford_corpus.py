@@ -1,6 +1,8 @@
 import hashlib
+import io
 import itertools
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -265,6 +267,35 @@ def test_journal_head_detects_tail_loss(tmp_path: Path, damage: str) -> None:
         read_access_journal(journal)
 
 
+def test_restart_recovers_valid_fsynced_suffix_after_head_update_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    digest, _ = persist_freeze(tmp_path, document)
+    original = oxford_corpus._persist_journal_head
+
+    def fail_head(*args: object, **kwargs: object) -> None:
+        raise OSError("injected head update failure")
+
+    monkeypatch.setattr(oxford_corpus, "_persist_journal_head", fail_head)
+    with pytest.raises(OSError, match="head update failure"):
+        append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+    monkeypatch.setattr(oxford_corpus, "_persist_journal_head", original)
+
+    recovered = read_access_journal(tmp_path / "access/outcome-access.jsonl")
+    assert len(recovered) == 1
+    append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+    assert len(read_access_journal(tmp_path / "access/outcome-access.jsonl")) == 2
+
+
 def test_content_address_alone_cannot_authorize_outcome_access(tmp_path: Path) -> None:
     source = tmp_path / "identity.npz"
     source.write_bytes(b"fixture")
@@ -286,7 +317,8 @@ def test_content_address_alone_cannot_authorize_outcome_access(tmp_path: Path) -
         ("timing", "freeze_timing_mismatch"),
         ("resources", "freeze_resource_contract_mismatch"),
         ("evidence", "freeze_evidence_identity_mismatch"),
-        ("graph", "freeze_graph_status_mismatch"),
+        ("reconciliation", "freeze_reconciliation_mismatch"),
+        ("exposures", "freeze_exposure_snapshot_mismatch"),
         ("development", "freeze_development_group_missing"),
         ("partition", "freeze_partition_mismatch"),
         ("acquisition", "freeze_acquisition_identity_mismatch"),
@@ -312,7 +344,8 @@ def test_freeze_semantics_are_authorization_not_merely_content_address(
         "timing": ("timing", {}),
         "resources": ("resource_contract", {}),
         "evidence": ("bound_evidence_hashes", {}),
-        "graph": ("source_graph_status", "reconciled"),
+        "reconciliation": ("reconciliation", {}),
+        "exposures": ("exposures", {}),
         "development": ("development_group_ids", []),
         "partition": ("holdout_group_ids", [spec.connected_group_id]),
         "acquisition": ("acquisitions", []),
@@ -357,6 +390,124 @@ def test_bound_production_evidence_is_verified_from_exact_paths(
         verifier(input_root)
 
 
+def test_freeze_materializes_reconciled_components_and_evidence(tmp_path: Path) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    reconciliation = cast(dict[str, object], document["reconciliation"])
+    assert len(cast(list[object], reconciliation["final_mfe_components"])) == 1
+    assert len(cast(list[object], reconciliation["zenodo_rydmr_preparation_groups"])) == 3
+    assert len(cast(list[object], reconciliation["retrieval_only_sources"])) == 6
+    rfe = cast(dict[str, object], reconciliation["rfe_duplicate_alias_component"])
+    assert rfe["physical_observation_count"] == 1
+    assert isinstance(reconciliation["reconciliation_sha256"], str)
+
+    production_exposures = {
+        item.connected_group_id: item.initial_exposure
+        for item in oxford_corpus.OXFORD_V3_ACQUISITIONS
+    }
+    production = freeze_document(
+        [], production_exposures, specs=oxford_corpus.OXFORD_V3_ACQUISITIONS
+    )
+    production_reconciliation = cast(dict[str, object], production["reconciliation"])
+    assert len(cast(list[object], production_reconciliation["final_mfe_components"])) == 5
+    production_preflights = [
+        oxford_corpus._production_preflight_identity(item)
+        for item in oxford_corpus.OXFORD_V3_ACQUISITIONS
+    ]
+    assert [record["archive_bytes"] for record in production_preflights] == [
+        10_791_572,
+        10_672_772,
+        10_445_972,
+        10_755_572,
+        10_856_372,
+    ]
+
+
+def test_snapshot_and_pinned_open_refuse_unbounded_or_missing_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(oxford_corpus, "MAX_ARCHIVE_SNAPSHOT_BYTES", 3)
+    with pytest.raises(ValueError, match="archive_snapshot_budget_exceeded"):
+        oxford_corpus._snapshot_handle(io.BytesIO(b"four"))
+
+    missing = tmp_path / "missing.npz"
+    missing.write_bytes(b"identity")
+    spec = _fixture_spec(missing)
+    missing.unlink()
+    with pytest.raises(ValueError, match="source_open_refused"):
+        preflight_npz(missing, spec)
+
+    directory = tmp_path / "directory-source"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="source_not_regular_file"):
+        preflight_npz(directory, spec)
+
+
+def test_invalid_head_and_freeze_serialization_refuse(tmp_path: Path) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    digest, _ = persist_freeze(tmp_path, document)
+    append_access_event(tmp_path, spec, preflight, digest, run_id="run")
+    head = tmp_path / "access/outcome-access.head.json"
+    head.write_text("not json\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid_outcome_access_journal_head"):
+        read_access_journal(tmp_path / "access/outcome-access.jsonl")
+
+    invalid = b"{not json}\n"
+    invalid_digest = hashlib.sha256(invalid).hexdigest()
+    other = tmp_path / "other"
+    invalid_path = other / f"freezes/{invalid_digest}.json"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_bytes(invalid)
+    with pytest.raises(ValueError, match="invalid_pre_read_freeze"):
+        append_access_event(other, spec, preflight, invalid_digest, run_id="run")
+
+
+def test_freeze_exposure_snapshot_must_join_locked_prior_events(tmp_path: Path) -> None:
+    source = tmp_path / "identity.npz"
+    source.write_bytes(b"fixture")
+    spec = _fixture_spec(source)
+    preflight = oxford_corpus.PreflightRecord(
+        spec.acquisition_id, 7, spec.sha256, spec.provider_md5, ()
+    )
+    first_document = freeze_document(
+        [preflight], {spec.connected_group_id: spec.initial_exposure}, specs=[spec]
+    )
+    first_digest, _ = persist_freeze(tmp_path, first_document)
+    append_access_event(tmp_path, spec, preflight, first_digest, run_id="first")
+    events = read_access_journal(tmp_path / "access/outcome-access.jsonl")
+
+    inspected = {spec.connected_group_id: ExposureState.OUTCOME_INSPECTED}
+    next_document = freeze_document(
+        [preflight], inspected, specs=[spec], prior_access_events=events
+    )
+    next_digest, _ = persist_freeze(tmp_path, next_document)
+    downgraded = freeze_document(
+        [preflight],
+        {spec.connected_group_id: spec.initial_exposure},
+        specs=[spec],
+        prior_access_events=events,
+    )
+    downgraded_digest, _ = persist_freeze(tmp_path, downgraded)
+    with pytest.raises(ValueError, match="freeze_exposure_snapshot_mismatch"):
+        append_access_event(tmp_path, spec, preflight, downgraded_digest, run_id="bad")
+    append_access_event(tmp_path, spec, preflight, next_digest, run_id="next")
+
+
 def test_access_and_partition_guards_refuse_before_use(tmp_path: Path) -> None:
     source = tmp_path / "identity.npz"
     source.write_bytes(b"fixture")
@@ -385,6 +536,7 @@ def test_resource_budget_includes_threshold_and_all_caps(
         scratch_bytes=20,
         transient_bytes=30,
         free_bytes=threshold,
+        rss_bytes=oxford_corpus.MAX_RSS_BYTES - 30,
     )
     with pytest.raises(ValueError, match="free_space_reserve_breached"):
         require_resource_budget(
@@ -406,8 +558,8 @@ def test_resource_budget_includes_threshold_and_all_caps(
             tmp_path,
             persistent_bytes=0,
             scratch_bytes=0,
-            transient_bytes=0,
-            rss_bytes=oxford_corpus.MAX_RSS_BYTES + 1,
+            transient_bytes=30,
+            rss_bytes=oxford_corpus.MAX_RSS_BYTES - 29,
         )
 
 
@@ -457,7 +609,13 @@ def test_guarded_reader_pins_authenticated_descriptor_across_path_swap(
 
     def append_then_swap(*args: Any, **kwargs: Any) -> dict[str, object]:
         event = original_append(*args, **kwargs)
-        replacement.replace(path)
+        replacement_bytes = replacement.read_bytes()
+        with path.open("r+b") as handle:
+            handle.seek(0)
+            handle.write(replacement_bytes)
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
         return event
 
     monkeypatch.setattr(oxford_corpus, "append_access_event", append_then_swap)

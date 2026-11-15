@@ -35,6 +35,7 @@ MAX_TRANSIENT_BYTES: Final = 128 * 1024**2
 MAX_SCRATCH_BYTES: Final = 512 * 1024**2
 MAX_OUTPUT_BYTES: Final = 128 * 1024**2
 MAX_RSS_BYTES: Final = 1024**3
+MAX_ARCHIVE_SNAPSHOT_BYTES: Final = 16 * 1024**2
 PRODUCTION_METADATA_SHA256: Final = (
     "a8f579e2335bcb5400a326f657527082ad73cbc8d2e1f264c628ef1ceabe48e"
 )
@@ -309,6 +310,14 @@ OXFORD_V3_ACQUISITIONS: Final = (
     ),
 )
 
+_PRODUCTION_ARCHIVE_BYTES: Final = {
+    "oxv3-mfe-fig1c-20250723-e5-r0": 10_791_572,
+    "oxv3-mfe-fig2-maglov-20250730-e10-r0": 10_672_772,
+    "oxv3-mfe-fig2-maglov2-20250730-e14-r0": 10_445_972,
+    "oxv3-mfe-fig2-aslov2r2-20250731-e0-r0": 10_755_572,
+    "oxv3-mfe-fig2-maglov2fast-20250731-e4-r0": 10_856_372,
+}
+
 
 def _hash_file(path: Path, algorithm: str = "sha256") -> str:
     digest = hashlib.new(algorithm)
@@ -325,6 +334,14 @@ def _hash_handle(handle: BinaryIO, algorithm: str) -> str:
         digest.update(chunk)
     handle.seek(0)
     return digest.hexdigest()
+
+
+def _snapshot_handle(handle: BinaryIO) -> bytes:
+    handle.seek(0)
+    snapshot = handle.read(MAX_ARCHIVE_SNAPSHOT_BYTES + 1)
+    if len(snapshot) > MAX_ARCHIVE_SNAPSHOT_BYTES:
+        raise ValueError("archive_snapshot_budget_exceeded")
+    return snapshot
 
 
 @contextmanager
@@ -383,6 +400,9 @@ def _read_npy_header(handle: BinaryIO, name: str, member_size: int) -> NpyHeader
 
 
 def _preflight_open_npz(handle: BinaryIO, spec: AcquisitionSpec) -> PreflightRecord:
+    handle.seek(0, os.SEEK_END)
+    archive_bytes = handle.tell()
+    handle.seek(0)
     if _hash_handle(handle, "sha256") != spec.sha256:
         raise ValueError("source_sha256_mismatch")
     if _hash_handle(handle, "md5") != spec.provider_md5:
@@ -415,7 +435,7 @@ def _preflight_open_npz(handle: BinaryIO, spec: AcquisitionSpec) -> PreflightRec
             raise ValueError(f"invalid_npy_contract:{name}")
     return PreflightRecord(
         spec.acquisition_id,
-        os.fstat(handle.fileno()).st_size,
+        archive_bytes,
         spec.sha256,
         spec.provider_md5,
         tuple(sorted(headers, key=lambda header: header.name)),
@@ -426,7 +446,8 @@ def preflight_npz(path: Path, spec: AcquisitionSpec) -> PreflightRecord:
     """Authenticate an archive and inspect ZIP/NPY headers without numeric access."""
 
     with _open_pinned(path) as handle:
-        return _preflight_open_npz(handle, spec)
+        snapshot = _snapshot_handle(handle)
+    return _preflight_open_npz(io.BytesIO(snapshot), spec)
 
 
 def require_resource_budget(
@@ -447,7 +468,7 @@ def require_resource_budget(
     if persistent_bytes < 0 or persistent_bytes > MAX_TRANSIENT_BYTES:
         raise ValueError("persistent_output_budget_exceeded")
     current_rss = current_rss_bytes() if rss_bytes is None else rss_bytes
-    if current_rss < 0 or current_rss > MAX_RSS_BYTES:
+    if current_rss < 0 or current_rss + transient_bytes > MAX_RSS_BYTES:
         raise ValueError("rss_budget_exceeded")
     available = shutil.disk_usage(path).free if free_bytes is None else free_bytes
     if available < MINIMUM_FREE_BYTES + persistent_bytes + scratch_bytes:
@@ -682,11 +703,255 @@ def _resource_contract() -> dict[str, int]:
     }
 
 
+_ZENODO_RYDMR_GROUPS: Final = (
+    {
+        "preparation_group_id": "prep:zenodo-14500235-fig2-maglov-1",
+        "connected_group_id": "cg:zenodo-14500235-fig2-maglov-rydmr-a",
+        "source_id": "zenodo:14500235:file:9cee9567-972e-4c99-b1f1-8d8ee23b9195",
+        "member_id": (
+            "zenodo-member:14500235:9cee9567-972e-4c99-b1f1-8d8ee23b9195:RYDMR_2/RYDMR_config.json"
+        ),
+        "member_sha256": "d7ba38303dd0df4dbbce55eb2d3d5229f6e7662003892c5902505098fcf2a9be",
+        "provider_md5": "f810c4d2b5e1b89e75f37cd0556980c3",
+        "sample": "T7 MagLOV 1 (10/9/24)",
+        "exposure_ms": 15,
+    },
+    {
+        "preparation_group_id": "prep:zenodo-14500235-fig2-maglov-2",
+        "connected_group_id": "cg:zenodo-14500235-fig2-maglov-rydmr-b",
+        "source_id": "zenodo:14500235:file:25d94b02-7c35-4241-b123-35171e1a95f6",
+        "member_id": (
+            "zenodo-member:14500235:25d94b02-7c35-4241-b123-35171e1a95f6:RYDMR_5/RYDMR_config.json"
+        ),
+        "member_sha256": "7d94e27937ced4338f3e89418813d1e011ab4f3206120f5cdb70c49249b84ba4",
+        "provider_md5": "25890e5d47483db69af57b605ca97827",
+        "sample": "T7 MagLOV 2 (10/9/24)",
+        "exposure_ms": 30,
+    },
+    {
+        "preparation_group_id": "prep:zenodo-14500235-fig2-maglov-3",
+        "connected_group_id": "cg:zenodo-14500235-fig2-maglov-rydmr-c",
+        "source_id": "zenodo:14500235:file:2ec3bbf3-fc10-4566-bf35-3853b614d14d",
+        "member_id": (
+            "zenodo-member:14500235:2ec3bbf3-fc10-4566-bf35-3853b614d14d:RYDMR_6/RYDMR_config.json"
+        ),
+        "member_sha256": "bc77622e236168a2424594105e45e50478700e86a8c005368b365efe7cbc94ff",
+        "provider_md5": "66cf3db42e15804a31da6496ff92d97e",
+        "sample": "T7 MagLOV 3 (10/9/24)",
+        "exposure_ms": 40,
+    },
+)
+
+_RETRIEVAL_ONLY_SOURCES: Final = (
+    (
+        "e748c4c6-4cbb-4e6d-8fdb-7fe671abd2e7",
+        "Figure_1_single_cell_MFE.7z",
+        4_187_018_174,
+        "385615586baf6fa75371cf7aecb1bc8a",
+    ),
+    (
+        "b1bcf800-8d38-4314-82cc-e2547232a88f",
+        "Figure_1_single_cell_ODMR.7z",
+        3_429_609_032,
+        "f4f723df2a860610bb3be5c4ac3cd3a7",
+    ),
+    (
+        "30d5c78f-acfb-40b9-98b9-f685c795c35f",
+        "Figure_2_MagLOV_pTU1.7z",
+        23_786_066_883,
+        "10a75f7713129f75be59dd3f31a4e1de",
+    ),
+    (
+        "48339729-ef2a-4582-9394-5c0d62da8166",
+        "Figure_5_AsLOV_R3.7z",
+        3_935_762_604,
+        "27da8a94cc234d97edea730c69824eeb",
+    ),
+    (
+        "0c253d93-701f-486a-aea9-222077b37757",
+        "Figure_5_Mixture.7z",
+        3_943_108_756,
+        "5ac7aa30836cfa02a79914f6726a5b74",
+    ),
+    (
+        "2ba89deb-1e4c-4233-8b6f-338e98a4b0b8",
+        "Figure_5_MagLOV_R11_f.7z",
+        4_112_431_614,
+        "6afe61104090ba41ec2041587bdadb66",
+    ),
+)
+
+
+def _trusted_specs_for(spec: AcquisitionSpec) -> tuple[AcquisitionSpec, ...]:
+    if any(candidate.acquisition_id == spec.acquisition_id for candidate in OXFORD_V3_ACQUISITIONS):
+        return OXFORD_V3_ACQUISITIONS
+    return (spec,)
+
+
+def _acquisition_identity(spec: AcquisitionSpec) -> dict[str, object]:
+    return {
+        "acquisition_id": spec.acquisition_id,
+        "source_id": spec.source_id,
+        "byte_id": spec.byte_id,
+        "provider_path": spec.provider_path,
+        "local_name": spec.local_name,
+        "provider_md5": spec.provider_md5,
+        "row_count": spec.row_count,
+        "construct_id": spec.construct_id,
+        "connected_group_id": spec.connected_group_id,
+        "initial_exposure": spec.initial_exposure.value,
+    }
+
+
+def _production_preflight_identity(spec: AcquisitionSpec) -> dict[str, object]:
+    record = PreflightRecord(
+        spec.acquisition_id,
+        _PRODUCTION_ARCHIVE_BYTES[spec.acquisition_id],
+        spec.sha256,
+        spec.provider_md5,
+        (
+            NpyHeader("background.npy", "<f4", (), False, 128, 4),
+            NpyHeader("mask.npy", "|b1", (3200, 3200), False, 128, 10_240_000),
+            NpyHeader(
+                "time_traces.npy",
+                "<f4",
+                (spec.row_count, 900),
+                False,
+                128,
+                spec.row_count * 900 * 4,
+            ),
+        ),
+    )
+    return cast(dict[str, object], json.loads(_canonical_bytes(asdict(record))))
+
+
+def _expected_exposures(
+    specs: Sequence[AcquisitionSpec], events: Sequence[Mapping[str, object]]
+) -> dict[str, ExposureState]:
+    exposures = {spec.connected_group_id: spec.initial_exposure for spec in specs}
+    for event in events:
+        group = event.get("connected_group_id")
+        if isinstance(group, str) and group in exposures:
+            exposures[group] = join_exposure(exposures[group], ExposureState.OUTCOME_INSPECTED)
+    return exposures
+
+
+def _reconciliation_contract(
+    specs: Sequence[AcquisitionSpec],
+    exposures: Mapping[str, ExposureState],
+    events: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    final_components: list[dict[str, object]] = []
+    for spec in sorted(specs, key=lambda item: item.acquisition_id):
+        history: list[dict[str, object]] = [
+            {"kind": "initial_classification", "state": spec.initial_exposure.value}
+        ]
+        state = spec.initial_exposure
+        for event in events:
+            if event.get("connected_group_id") != spec.connected_group_id:
+                continue
+            state = join_exposure(state, ExposureState.OUTCOME_INSPECTED)
+            history.append(
+                {
+                    "kind": "outcome_access",
+                    "event_id": event["event_id"],
+                    "state_candidate": ExposureState.OUTCOME_INSPECTED.value,
+                    "resulting_state": state.value,
+                }
+            )
+        component: dict[str, object] = {
+            "acquisition_id": spec.acquisition_id,
+            "connected_group_id": spec.connected_group_id,
+            "source_ids": [spec.source_id],
+            "byte_ids": [spec.byte_id],
+            "provider_path": spec.provider_path,
+            "construct_id": spec.construct_id,
+            "construct_evidence_grade": "E1_publication_registry",
+            "preparation_group_id": None,
+            "preparation_status": "unresolved",
+            "perturbation": "mfe_current_switch",
+            "observable": "roi_fluorescence_processed",
+            "processing_level": "roi_derived_trace",
+            "exposure_state": exposures[spec.connected_group_id].value,
+            "exposure_history": history,
+        }
+        component["component_sha256"] = _stable_hash(component)
+        final_components.append(component)
+    rfe_alias = {
+        "connected_group_id": "cg:oxv3-rfe-aslov2r2-byte-ff759d18028e",
+        "source_ids": [
+            "figshare:30344995:v3:file:59258792",
+            "figshare:30344995:v3:file:59258885",
+        ],
+        "byte_id": "sha256:ff759d18028e7689a8358533e8fe74391887fb0246c7d0d65d5e217e637c6fa1",
+        "provider_paths": ["upload/Fig2/RFE/AsLOV2 R2", "upload/Fig2/RFE/AsLOV R2"],
+        "provider_md5": "b0f28fb901df72932cb515881663e51d",
+        "physical_observation_count": 1,
+        "compatibility_status": "ineligible",
+        "reason_codes": ["different_perturbation_odmr_rfe"],
+    }
+    retrieval = [
+        {
+            "source_id": f"zenodo:14500235:file:{source_uuid}",
+            "provider_key": key,
+            "byte_size": size,
+            "provider_md5": md5,
+            "local_sha256": None,
+            "local_state": "retrieval_only",
+        }
+        for source_uuid, key, size, md5 in _RETRIEVAL_ONLY_SOURCES
+    ]
+    compatibility = [
+        {
+            "acquisition_id": spec.acquisition_id,
+            "analysis_id": "tier_d_mfe_magnitude",
+            "compatibility_status": "eligible",
+            "reason_codes": ["acquisition_confounded", "within_acquisition_only"],
+        }
+        for spec in sorted(specs, key=lambda item: item.acquisition_id)
+    ]
+    records: dict[str, object] = {
+        "final_mfe_components": final_components,
+        "rfe_duplicate_alias_component": rfe_alias,
+        "zenodo_rydmr_preparation_groups": [
+            {
+                **group,
+                "evidence_grade": "E2_deposit_metadata",
+                "perturbation": "rydmr",
+                "exposure_state": "exposure_unknown",
+                "mfe_compatibility_status": "ineligible",
+                "reason_codes": ["different_perturbation_rydmr"],
+            }
+            for group in _ZENODO_RYDMR_GROUPS
+        ],
+        "retrieval_only_sources": retrieval,
+        "evidence_pointers": {
+            "zenodo_naming_note": {
+                "sha256": EVIDENCE_HASHES["zenodo_record"],
+                "json_pointer": "/metadata/notes",
+            },
+            "archive_members": {
+                "sha256": EVIDENCE_HASHES["archive_members"],
+                "selector": "exact_(archive_path,member_path)",
+            },
+            "construct_alias_readme": {
+                "sha256": EVIDENCE_HASHES["alias_readme"],
+                "lines": [5, 6, 7],
+            },
+        },
+        "compatibility_decisions": compatibility,
+        "cross_generation_status": "separate_acquisition_generations_alias_is_covariate_only",
+    }
+    records["reconciliation_sha256"] = _stable_hash(records)
+    return records
+
+
 def freeze_document(
     preflights: Sequence[PreflightRecord],
     exposures: Mapping[str, ExposureState],
     *,
     specs: Sequence[AcquisitionSpec],
+    prior_access_events: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     """Create the canonical outcome-blind Tier-D freeze document."""
 
@@ -704,30 +969,30 @@ def freeze_document(
         ],
         "exposures": {key: exposures[key].value for key in sorted(exposures)},
         "acquisitions": [
-            {
-                "acquisition_id": spec.acquisition_id,
-                "source_id": spec.source_id,
-                "byte_id": spec.byte_id,
-                "provider_path": spec.provider_path,
-                "local_name": spec.local_name,
-                "provider_md5": spec.provider_md5,
-                "row_count": spec.row_count,
-                "construct_id": spec.construct_id,
-                "connected_group_id": spec.connected_group_id,
-            }
+            _acquisition_identity(spec)
             for spec in sorted(specs, key=lambda item: item.acquisition_id)
         ],
         "transform": _transform_contract(),
         "timing": _timing_contract(),
         "resource_contract": _resource_contract(),
         "bound_evidence_hashes": EVIDENCE_HASHES,
-        "source_graph_status": "not_reconciled_beyond_declared_connected_groups",
+        "reconciliation": _reconciliation_contract(specs, exposures, prior_access_events),
+        "prior_access_journal_head": {
+            "event_count": len(prior_access_events),
+            "last_event_sha256": (
+                prior_access_events[-1].get("event_sha256") if prior_access_events else None
+            ),
+        },
         "claim_boundary": "descriptive_only_no_model_fitting_or_variant_ranking",
     }
 
 
 def _validate_freeze_for_access(
-    document: Mapping[str, object], spec: AcquisitionSpec, preflight: PreflightRecord
+    document: Mapping[str, object],
+    spec: AcquisitionSpec,
+    preflight: PreflightRecord,
+    locked_access_events: Sequence[Mapping[str, object]],
+    freeze_sha256: str,
 ) -> None:
     if document.get("schema_version") != FREEZE_SCHEMA_VERSION:
         raise ValueError("freeze_schema_mismatch")
@@ -743,31 +1008,66 @@ def _validate_freeze_for_access(
         raise ValueError("freeze_resource_contract_mismatch")
     if document.get("bound_evidence_hashes") != EVIDENCE_HASHES:
         raise ValueError("freeze_evidence_identity_mismatch")
-    if document.get("source_graph_status") != "not_reconciled_beyond_declared_connected_groups":
-        raise ValueError("freeze_graph_status_mismatch")
-    groups = document.get("development_group_ids")
-    if not isinstance(groups, list) or spec.connected_group_id not in groups:
+    frozen_head = document.get("prior_access_journal_head")
+    if not isinstance(frozen_head, Mapping):
+        raise ValueError("freeze_access_head_missing")
+    event_count = frozen_head.get("event_count")
+    if (
+        not isinstance(event_count, int)
+        or event_count < 0
+        or event_count > len(locked_access_events)
+    ):
+        raise ValueError("freeze_access_head_mismatch")
+    frozen_events = locked_access_events[:event_count]
+    frozen_last_hash = frozen_events[-1].get("event_sha256") if frozen_events else None
+    if frozen_head.get("last_event_sha256") != frozen_last_hash:
+        raise ValueError("freeze_access_head_mismatch")
+    if any(
+        event.get("pre_read_freeze_sha256") != freeze_sha256
+        for event in locked_access_events[event_count:]
+    ):
+        raise ValueError("freeze_access_suffix_mismatch")
+    trusted_specs = _trusted_specs_for(spec)
+    trusted_current = next(
+        candidate for candidate in trusted_specs if candidate.acquisition_id == spec.acquisition_id
+    )
+    if spec != trusted_current:
+        raise ValueError("access_spec_identity_mismatch")
+    expected_exposures = _expected_exposures(trusted_specs, frozen_events)
+    expected_exposure_values = {
+        group: state.value for group, state in sorted(expected_exposures.items())
+    }
+    if document.get("exposures") != expected_exposure_values:
+        raise ValueError("freeze_exposure_snapshot_mismatch")
+    expected_reconciliation = _reconciliation_contract(
+        trusted_specs, expected_exposures, frozen_events
+    )
+    if document.get("reconciliation") != expected_reconciliation:
+        raise ValueError("freeze_reconciliation_mismatch")
+    expected_groups = sorted(candidate.connected_group_id for candidate in trusted_specs)
+    if document.get("development_group_ids") != expected_groups:
         raise ValueError("freeze_development_group_missing")
     if document.get("training_group_ids") != [] or document.get("holdout_group_ids") != []:
         raise ValueError("freeze_partition_mismatch")
-    acquisitions = document.get("acquisitions")
-    expected_acquisition = {
-        "acquisition_id": spec.acquisition_id,
-        "source_id": spec.source_id,
-        "byte_id": spec.byte_id,
-        "provider_path": spec.provider_path,
-        "local_name": spec.local_name,
-        "provider_md5": spec.provider_md5,
-        "row_count": spec.row_count,
-        "construct_id": spec.construct_id,
-        "connected_group_id": spec.connected_group_id,
-    }
-    if not isinstance(acquisitions, list) or expected_acquisition not in acquisitions:
+    expected_acquisitions = [
+        _acquisition_identity(candidate)
+        for candidate in sorted(trusted_specs, key=lambda item: item.acquisition_id)
+    ]
+    if document.get("acquisitions") != expected_acquisitions:
         raise ValueError("freeze_acquisition_identity_mismatch")
     preflights = document.get("preflights")
-    expected_preflight = json.loads(_canonical_bytes(asdict(preflight)))
-    if not isinstance(preflights, list) or expected_preflight not in preflights:
+    if trusted_specs == OXFORD_V3_ACQUISITIONS:
+        expected_preflights = [
+            _production_preflight_identity(candidate)
+            for candidate in sorted(trusted_specs, key=lambda item: item.acquisition_id)
+        ]
+    else:
+        expected_preflights = [json.loads(_canonical_bytes(asdict(preflight)))]
+    if preflights != expected_preflights:
         raise ValueError("freeze_preflight_identity_mismatch")
+    current_preflight = json.loads(_canonical_bytes(asdict(preflight)))
+    if current_preflight not in expected_preflights:
+        raise ValueError("access_preflight_identity_mismatch")
 
 
 def persist_freeze(output_root: Path, document: Mapping[str, object]) -> tuple[str, Path]:
@@ -811,14 +1111,9 @@ def _exclusive_lock(path: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def read_access_journal(path: Path) -> tuple[dict[str, object], ...]:
-    """Validate and return a complete hash-chained journal."""
-
-    head_path = path.with_name("outcome-access.head.json")
-    if not path.exists() and not head_path.exists():
-        return ()
-    if not path.is_file() or not head_path.is_file():
-        raise ValueError("outcome_access_journal_head_mismatch")
+def _parse_journal_chain(path: Path) -> tuple[dict[str, object], ...]:
+    if not path.is_file():
+        raise ValueError("outcome_access_journal_missing")
     raw = path.read_bytes()
     if not raw or not raw.endswith(b"\n"):
         raise ValueError("invalid_outcome_access_journal_tail")
@@ -842,18 +1137,6 @@ def read_access_journal(path: Path) -> tuple[dict[str, object], ...]:
         event["event_sha256"] = actual_hash
         events.append(event)
         previous = actual_hash
-    try:
-        head = cast(dict[str, object], json.loads(head_path.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ValueError("invalid_outcome_access_journal_head") from error
-    expected_head = {
-        "schema_version": "paircraft.outcome_access_head.v1",
-        "last_sequence": len(events) - 1,
-        "last_event_sha256": previous,
-        "event_count": len(events),
-    }
-    if head != expected_head:
-        raise ValueError("outcome_access_journal_head_mismatch")
     return tuple(events)
 
 
@@ -882,6 +1165,41 @@ def _persist_journal_head(access_directory: Path, event_count: int, event_hash: 
             os.unlink(temporary_name)
 
 
+def _read_access_journal_unlocked(path: Path) -> tuple[dict[str, object], ...]:
+    head_path = path.with_name("outcome-access.head.json")
+    if not path.exists() and not head_path.exists():
+        return ()
+    if not path.is_file():
+        raise ValueError("outcome_access_journal_head_mismatch")
+    events = _parse_journal_chain(path)
+    if not head_path.exists():
+        _persist_journal_head(path.parent, len(events), cast(str, events[-1]["event_sha256"]))
+        return events
+    try:
+        head = cast(dict[str, object], json.loads(head_path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("invalid_outcome_access_journal_head") from error
+    if head.get("schema_version") != "paircraft.outcome_access_head.v1":
+        raise ValueError("outcome_access_journal_head_mismatch")
+    count = head.get("event_count")
+    if not isinstance(count, int) or count <= 0 or count > len(events):
+        raise ValueError("outcome_access_journal_head_mismatch")
+    if head.get("last_sequence") != count - 1 or head.get("last_event_sha256") != events[
+        count - 1
+    ].get("event_sha256"):
+        raise ValueError("outcome_access_journal_head_mismatch")
+    if count < len(events):
+        _persist_journal_head(path.parent, len(events), cast(str, events[-1]["event_sha256"]))
+    return events
+
+
+def read_access_journal(path: Path) -> tuple[dict[str, object], ...]:
+    """Synchronize, validate, recover a valid suffix, and return the journal."""
+
+    with _exclusive_lock(path.with_name("outcome-access.lock")):
+        return _read_access_journal_unlocked(path)
+
+
 def append_access_event(
     output_root: Path,
     spec: AcquisitionSpec,
@@ -898,16 +1216,16 @@ def append_access_event(
         or hashlib.sha256(freeze_path.read_bytes()).hexdigest() != freeze_sha256
     ):
         raise ValueError("durable_pre_read_freeze_missing")
-    try:
-        freeze = cast(dict[str, object], json.loads(freeze_path.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ValueError("invalid_pre_read_freeze") from error
-    _validate_freeze_for_access(freeze, spec, preflight)
     access_directory = output_root / "access"
     access_directory.mkdir(parents=True, exist_ok=True)
     journal = access_directory / "outcome-access.jsonl"
     with _exclusive_lock(access_directory / "outcome-access.lock"):
-        events = read_access_journal(journal)
+        events = _read_access_journal_unlocked(journal)
+        try:
+            freeze = cast(dict[str, object], json.loads(freeze_path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError("invalid_pre_read_freeze") from error
+        _validate_freeze_for_access(freeze, spec, preflight, events, freeze_sha256)
         previous = cast(str, events[-1]["event_sha256"]) if events else None
         event: dict[str, object] = {
             "sequence": len(events),
@@ -967,24 +1285,26 @@ def read_admitted_arrays(
 
     output_root.mkdir(parents=True, exist_ok=True)
     with _open_pinned(path) as handle:
-        actual_preflight = _preflight_open_npz(handle, spec)
-        if preflight != actual_preflight:
-            raise ValueError("preflight_state_changed")
-        require_resource_budget(
-            output_root,
-            persistent_bytes=0,
-            scratch_bytes=0,
-            transient_bytes=sum(header.numeric_bytes for header in preflight.headers),
-        )
-        event = append_access_event(output_root, spec, preflight, freeze_sha256, run_id=run_id)
-        traces, mask, background = _read_numeric_members(handle)
-        require_resource_budget(
-            output_root,
-            persistent_bytes=0,
-            scratch_bytes=0,
-            transient_bytes=sum(header.numeric_bytes for header in preflight.headers),
-        )
-        return traces, mask, background, event
+        snapshot = _snapshot_handle(handle)
+    actual_preflight = _preflight_open_npz(io.BytesIO(snapshot), spec)
+    if preflight != actual_preflight:
+        raise ValueError("preflight_state_changed")
+    planned_numeric_bytes = sum(header.numeric_bytes for header in preflight.headers)
+    require_resource_budget(
+        output_root,
+        persistent_bytes=0,
+        scratch_bytes=0,
+        transient_bytes=len(snapshot) + planned_numeric_bytes,
+    )
+    event = append_access_event(output_root, spec, preflight, freeze_sha256, run_id=run_id)
+    traces, mask, background = _read_numeric_members(io.BytesIO(snapshot))
+    require_resource_budget(
+        output_root,
+        persistent_bytes=0,
+        scratch_bytes=0,
+        transient_bytes=len(snapshot) + planned_numeric_bytes,
+    )
+    return traces, mask, background, event
 
 
 def _protocol_record(metadata: Mapping[str, object], spec: AcquisitionSpec) -> dict[str, object]:
@@ -1130,7 +1450,8 @@ def build_oxford_calibration_corpus(
         if group in exposures:
             exposures[group] = join_exposure(exposures[group], ExposureState.OUTCOME_INSPECTED)
     freeze_sha256, freeze_path = persist_freeze(
-        output_root, freeze_document(preflights, exposures, specs=specs)
+        output_root,
+        freeze_document(preflights, exposures, specs=specs, prior_access_events=previous_events),
     )
     run_id = _stable_hash({"freeze": freeze_sha256, "result": result_name})[:16]
     results_root = output_root / "results"
@@ -1165,6 +1486,12 @@ def build_oxford_calibration_corpus(
                     output_root,
                     freeze_sha256,
                     run_id=run_id,
+                )
+                require_resource_budget(
+                    output_root,
+                    persistent_bytes=MAX_OUTPUT_BYTES,
+                    scratch_bytes=MAX_SCRATCH_BYTES,
+                    transient_bytes=32 * 1024**2,
                 )
                 analyses: list[TraceAnalysis] = []
                 trajectory_values: dict[tuple[str, int], list[float]] = {
@@ -1206,6 +1533,12 @@ def build_oxford_calibration_corpus(
                     }
                 )
                 del analyses, traces, mask
+        require_resource_budget(
+            output_root,
+            persistent_bytes=MAX_OUTPUT_BYTES,
+            scratch_bytes=MAX_SCRATCH_BYTES,
+            transient_bytes=MAX_OUTPUT_BYTES,
+        )
         corpus: dict[str, object] = {
             "schema_version": "paircraft.oxford_calibration_corpus.v1",
             "feasibility_tier": "D_descriptive",
