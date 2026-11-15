@@ -361,6 +361,10 @@ def test_freeze_semantics_are_authorization_not_merely_content_address(
 def test_bound_production_evidence_is_verified_from_exact_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    assert (
+        oxford_corpus.PRODUCTION_METADATA_SHA256
+        == "a8f579e2335b3cb5400a326f657527082ad73cbc8d2e1f264c628ef1ceabe48e"
+    )
     input_root = tmp_path / "experiments/payloads/oxford-v3"
     provider_root = tmp_path / "experiments/provider-records"
     input_root.mkdir(parents=True)

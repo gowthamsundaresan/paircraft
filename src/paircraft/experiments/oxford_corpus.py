@@ -37,7 +37,7 @@ MAX_OUTPUT_BYTES: Final = 128 * 1024**2
 MAX_RSS_BYTES: Final = 1024**3
 MAX_ARCHIVE_SNAPSHOT_BYTES: Final = 16 * 1024**2
 PRODUCTION_METADATA_SHA256: Final = (
-    "a8f579e2335bcb5400a326f657527082ad73cbc8d2e1f264c628ef1ceabe48e"
+    "a8f579e2335b3cb5400a326f657527082ad73cbc8d2e1f264c628ef1ceabe48e"
 )
 FREEZE_SCHEMA_VERSION: Final = "paircraft.oxford_calibration.pre_read_freeze.v1"
 EVIDENCE_HASHES: Final = {
