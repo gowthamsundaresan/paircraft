@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import replace
 from math import nan
 from typing import Any, cast
@@ -157,3 +158,55 @@ def test_folded_mfe_rejects_incomplete_or_unusable_periods() -> None:
         analyze_folded_mfe(replace(trace, magnet_current_ampere=inconsistent_periods), config)
     with pytest.raises(ValueError, match="baseline must be finite and nonzero"):
         analyze_folded_mfe(replace(trace, signal=(0.0,) * len(trace.signal)), config)
+
+
+def test_mfe_result_rejects_shape_and_epistemic_mutations() -> None:
+    result = analyze_folded_mfe(
+        _trace(),
+        MfeAnalysisConfig(frames_per_state=4, steady_state_frames=2),
+    )
+    invalid_results: tuple[tuple[Callable[[], object], str], ...] = (
+        (
+            lambda: replace(
+                result,
+                folded_relative_signal=cast(Any, list(result.folded_relative_signal)),
+            ),
+            "immutable",
+        ),
+        (
+            lambda: replace(result, folded_relative_signal=result.folded_relative_signal[:-1]),
+            "length",
+        ),
+        (
+            lambda: replace(
+                result,
+                folded_relative_signal=(nan, *result.folded_relative_signal[1:]),
+            ),
+            "finite",
+        ),
+        (lambda: replace(result, sign_convention="(I_off-I_on)/I_off"), "sign convention"),
+        (lambda: replace(result, evidence_status="measured"), "calculated"),
+        (lambda: replace(result, uncertainty_status="reported"), "uncertainty"),
+        (lambda: replace(result, uncertainty_note=" "), "uncertainty"),
+        (lambda: replace(result, algorithm_identifier="other"), "algorithm identity"),
+    )
+    for construct, message in invalid_results:
+        with pytest.raises(ValueError, match=message):
+            construct()
+
+
+def test_mfe_result_rejects_zero_off_reference_and_analysis_rejects_zero_on_current() -> None:
+    result = analyze_folded_mfe(
+        _trace(),
+        MfeAnalysisConfig(frames_per_state=4, steady_state_frames=2),
+    )
+    zero_off = (0.0,) * 4 + result.folded_relative_signal[4:]
+    with pytest.raises(ValueError, match="field-OFF mean must be nonzero"):
+        replace(result, folded_relative_signal=zero_off)
+
+    all_off_current = (0.0,) * len(_trace().magnet_current_ampere)
+    with pytest.raises(ValueError, match="constant nonzero-current ON state"):
+        analyze_folded_mfe(
+            replace(_trace(), magnet_current_ampere=all_off_current),
+            MfeAnalysisConfig(frames_per_state=4, steady_state_frames=2),
+        )

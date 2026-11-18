@@ -14,7 +14,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the public command-line parser."""
     parser = argparse.ArgumentParser(
         prog="paircraft",
-        description="Computational design tools for magnetosensitive flavoproteins.",
+        description=(
+            "Auditable radical-pair simulation, evidence, audit, and agent-benchmark "
+            "infrastructure being built toward magnetosensitive protein design."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -38,6 +41,19 @@ def build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("--metadata", required=True, type=Path)
     corpus.add_argument("--output-root", required=True, type=Path)
     corpus.add_argument("--result-name", required=True)
+    benchmark = subparsers.add_parser(
+        "run-benchmark-demo",
+        help="Run the simulator-only adaptive-prediction benchmark demonstration.",
+        description="Run the simulator-only adaptive-prediction benchmark demonstration.",
+    )
+    benchmark.add_argument(
+        "--output-root",
+        required=True,
+        type=Path,
+        help=(
+            "Caller-selected generated-output directory; use gitignored outputs/ for local runs."
+        ),
+    )
     return parser
 
 
@@ -69,6 +85,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             cast(str, args.result_name),
         )
         print(destination)
+        return 0
+    if args.command == "run-benchmark-demo":
+        from paircraft.benchmark.demo import run_benchmark_demo
+
+        artifacts = run_benchmark_demo(cast(Path, args.output_root))
+        print(artifacts.agent_bundle_directory)
+        print(artifacts.summary_path)
         return 0
 
     build_parser().print_help()

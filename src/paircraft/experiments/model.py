@@ -20,6 +20,7 @@ class TraceClass(StrEnum):
     ROI_DERIVED_TRACE = "roi_derived_trace"
     BACKGROUND_CORRECTED_TRACE = "background_corrected_trace"
     NORMALIZED_FITTED_RESULT = "normalized_fitted_result"
+    DEPOSITED_FIGURE_INPUT_MEAN_INTENSITY_TRACE = "deposited_figure_input_mean_intensity_trace"
 
 
 @dataclass(frozen=True, slots=True)

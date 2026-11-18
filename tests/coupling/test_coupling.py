@@ -514,3 +514,97 @@ def test_repeat_field_vectors_are_allowed_for_distinct_ensemble_members() -> Non
 
     result = project_steady_state_readout(curve, _readout_run(), "ensemble-a")
     assert [point.input_point.point_id for point in result.points] == ["ensemble-a", "ensemble-b"]
+
+
+def test_citation_and_field_metadata_fail_closed_on_provenance_mutations() -> None:
+    uncertainty = _unknown_field_uncertainty()
+    metadata = _field(0.0).metadata
+
+    with pytest.raises(ValueError, match="immutable tuple"):
+        replace(uncertainty, citation_chain=[_citation()])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="at least the direct source"):
+        replace(uncertainty, citation_chain=())
+    with pytest.raises(ValueError, match="declared direct source"):
+        replace(uncertainty, source="https://example.test/different")
+    with pytest.raises(ValueError, match="tesla internally"):
+        replace(metadata, unit="mT")
+    with pytest.raises(ValueError, match="field conditions"):
+        SpinYieldCurve(
+            _run(),
+            (SpinYieldPoint("point", _field(0.0, conditions="different"), _yield(0.2)),),
+        )
+
+
+@pytest.mark.parametrize("components", [(nan, 1.0, 1.0), (-1.0, 1.0, 1.0)])
+def test_reported_field_uncertainty_rejects_invalid_components(
+    components: tuple[float, float, float],
+) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        replace(
+            _reported_field_uncertainty(),
+            component_standard_uncertainty_tesla=components,
+        )
+
+
+def test_spin_run_and_curve_require_physical_identity() -> None:
+    point = SpinYieldPoint("point", _field(0.0), _yield(0.2))
+    with pytest.raises(ValueError, match="viscosity"):
+        replace(_run(), viscosity_pascal_seconds=-1.0)
+    with pytest.raises(ValueError, match="at least one point"):
+        SpinYieldCurve(_run(), ())
+    with pytest.raises(ValueError, match="chemical state"):
+        SpinYieldCurve(
+            _run(),
+            (
+                replace(
+                    point,
+                    singlet_yield=replace(
+                        point.singlet_yield,
+                        metadata=replace(
+                            point.singlet_yield.metadata,
+                            chemical_state="different state",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="point ID"):
+        replace(point, point_id=" ")
+
+
+def test_calculated_observable_metadata_rejects_scientific_claim_mutations() -> None:
+    point = project_steady_state_readout(_curve(), _readout_run(), "reference").points[0]
+    metadata = point.emission_rate.metadata
+
+    with pytest.raises(ValueError, match="marked calculated"):
+        replace(metadata, evidence_status=EvidenceStatus.ASSUMED)
+    with pytest.raises(ValueError, match="population total"):
+        replace(metadata, population_total=0.99)
+    with pytest.raises(ValueError, match="units must match"):
+        replace(metadata, uncertainty=replace(metadata.uncertainty, unit="1"))
+    with pytest.raises(ValueError, match="must be finite"):
+        replace(point.emission_rate, value=nan)
+
+
+def test_projection_rejects_missing_and_contradictory_outputs() -> None:
+    projection = project_steady_state_readout(_curve(), _readout_run(), "reference")
+    with pytest.raises(ValueError, match="exactly one result"):
+        replace(projection, points=projection.points[:-1])
+
+    first = projection.points[0]
+    wrong_conditions = CalculatedObservable(
+        first.emission_rate.value,
+        replace(first.emission_rate.metadata, conditions="different rates"),
+    )
+    with pytest.raises(ValueError, match="conditions do not match"):
+        replace(
+            projection,
+            points=(
+                ReadoutProjectionPoint(
+                    first.input_point,
+                    wrong_conditions,
+                    first.relative_change,
+                ),
+                projection.points[1],
+            ),
+        )

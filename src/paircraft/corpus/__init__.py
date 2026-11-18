@@ -1,0 +1,41 @@
+"""Content-addressed corpus assignments and scientific-use policy."""
+
+from paircraft.corpus.manifest import (
+    CorpusEntry,
+    CorpusManifest,
+    CorpusRole,
+    DocumentedPermission,
+    EligibilityStatus,
+    EvidenceKind,
+    EvidenceLayer,
+    LeakageGroup,
+    LeakageGroupKind,
+    OutcomeAccess,
+    RightsEvidence,
+    RightsProfile,
+    RoleEligibility,
+    corpus_manifest_document,
+    corpus_manifest_json,
+    measurement_corpus_entry,
+    simulation_corpus_entry,
+)
+
+__all__ = [
+    "CorpusEntry",
+    "CorpusManifest",
+    "CorpusRole",
+    "DocumentedPermission",
+    "EligibilityStatus",
+    "EvidenceKind",
+    "EvidenceLayer",
+    "LeakageGroup",
+    "LeakageGroupKind",
+    "OutcomeAccess",
+    "RightsEvidence",
+    "RightsProfile",
+    "RoleEligibility",
+    "corpus_manifest_document",
+    "corpus_manifest_json",
+    "measurement_corpus_entry",
+    "simulation_corpus_entry",
+]

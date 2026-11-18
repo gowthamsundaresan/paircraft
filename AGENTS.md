@@ -68,6 +68,35 @@ development must use these same commands rather than equivalent variants.
 - Never silently mix magnetic field strength `H` with magnetic flux density `B`.
 - Never infer magnetic flux density `B` from coil current without a versioned, cited calibration;
   preserve the instrument current as a separate control/readback quantity.
+- Keep proposed magnetic fields separate from evidenced calibrated or measured fields; never invent
+  provenance merely to reuse an evidence-bearing field type.
+- Never replace an unreported experimental condition with a numeric placeholder. If a public
+  schema cannot represent partially known conditions, keep the result behind a narrower boundary
+  until the schema can express known and unknown fields independently.
+- Preserve the physical model family on every simulation row and oracle result. Do not pool
+  Haberkorn, semiclassical, and stochastic-diffusive outputs as exchangeable observations without a
+  declared discrepancy model.
+- Do not present an enumerated field sweep as a parameter distribution, posterior, uncertainty
+  ensemble, biological variability, or mutation effect. Hypothetical parameter perturbations need
+  a separate model identity and provenance boundary from published point-estimate systems.
+- Keep every field calculated from one simulator parameter set in one scientific family. A
+  field-level split leaks the same response curve across corpus roles.
+- A simulator prediction is reference-only, not training data. Corpus-manifest v1 may inventory
+  blockers but cannot assign training, calibration, or evaluation membership. Reserve "trajectory"
+  for a genuine multi-step agent rollout rather than one field calculation.
+- Content hashes alone do not authenticate that a deterministic scientific result came from the
+  intended solver. Persisted sweep bundles must bind to an expected immutable plan and reproduce
+  the canonical solver output before their numerical values or provenance are accepted.
+- Keep scientific eligibility, corpus assignment, and documented reuse rights as separate manifest
+  decisions. A permissive license does not make a datum calibration evidence, and scientific value
+  does not establish commercial computational-use rights.
+- Bind permissive measurement-rights assertions to the exact authenticated license member. Do not
+  infer simulation-output rights from Paircraft execution when inherited input rights are unresolved.
+- Keep every acquisition, source bundle, and simulator parameter set inside one corpus role. Do not
+  split dependent fields, technical repeats, derived views, or reruns across training, calibration,
+  and evaluation.
+- A public or otherwise previously observed outcome is not prospective evaluation evidence. A
+  prospective holdout must be sealed before the manifest assigns its evaluation role.
 - Never treat a best-fit parameter set as ground truth when the model is non-identifiable.
 - Never present retrospective fitting as prospective prediction.
 - Never use millitesla-range agreement alone to validate a sub-Earth-field claim.
@@ -86,8 +115,20 @@ development must use these same commands rather than equivalent variants.
 - Never treat deposited ROI-derived traces or a union mask as a raw-image segmentation
   reproduction; preserve missing row-to-mask identity and unavailable preprocessing as explicit
   limitations.
+- Do not infer an ROI or aggregation geometry from a deposited column named `Mean`. Preserve it as
+  a figure-input mean-intensity trace when the underlying pixels and aggregation method are absent.
+- Treat source-script magnet timing as a declared control annotation, not field readback. An
+  approximate reported ON-field magnitude does not quantify the OFF-state residual field.
+- Describe electromagnet assays as field on/off, not magnet near/far, unless the exact apparatus
+  physically moves a magnet. Preserve non-peer-reviewed publication status in machine-readable
+  provenance.
 - Make randomness explicit and seedable. Record model, code, data, and configuration versions
   for computational results.
+- Corpus manifests reference content-addressed data; they do not embed large traces, predictions,
+  or generated results. Concrete generated manifests remain in ignored output paths.
+- Filesystem lock and cleanup hardening assumes cooperative same-user writers that honor the lock.
+  Identity checks detect replacement only at their declared transitions; portable name-based
+  deletion is not a security boundary against a malicious same-user process racing after a check.
 - Do not add abstractions or dependencies without a current caller.
 - Preserve user changes and keep unrelated modifications out of the current change.
 - Use `rg` for repository searches and `apply_patch` for manual file edits.

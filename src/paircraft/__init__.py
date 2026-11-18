@@ -1,4 +1,4 @@
-"""Paircraft computational protein-design platform."""
+"""Auditable radical-pair simulation and benchmark infrastructure."""
 
 from importlib.metadata import version
 

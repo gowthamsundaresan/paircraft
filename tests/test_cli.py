@@ -119,3 +119,34 @@ def test_corpus_command_dispatches_build(
         == 0
     )
     assert capsys.readouterr().out.strip() == str(destination)
+
+
+def test_benchmark_demo_command_exposes_ignored_output_boundary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run-benchmark-demo", "--help"])
+    assert exit_info.value.code == 0
+    output = capsys.readouterr().out
+    assert "--output-root" in output
+    assert "simulator-only" in output
+
+
+def test_benchmark_demo_command_dispatches_and_reports_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from paircraft.benchmark import demo
+    from paircraft.benchmark.demo import BenchmarkDemoArtifacts
+
+    bundle = tmp_path / "agent-bundle"
+    summary = tmp_path / "summary.json"
+
+    def fake_demo(output_root: Path) -> BenchmarkDemoArtifacts:
+        assert output_root == tmp_path
+        return BenchmarkDemoArtifacts(bundle, summary, "a" * 64)
+
+    monkeypatch.setattr(demo, "run_benchmark_demo", fake_demo)
+    assert main(["run-benchmark-demo", "--output-root", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines() == [str(bundle), str(summary)]
