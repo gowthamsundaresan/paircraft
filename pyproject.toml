@@ -1,6 +1,6 @@
 [build-system]
 build-backend = "hatchling.build"
-requires = [ "hatchling>=1.28" ]
+requires = [ "hatchling>=1.33.0" ]
 
 [project]
 name = "paircraft"
@@ -30,7 +30,7 @@ dev = [
   "mypy>=1.18",
   "pip-audit>=2.9",
   "pre-commit>=4.3",
-  "pyproject-fmt>=2.6",
+  "pyproject-fmt>=2.31.1",
   "pytest>=8.4",
   "pytest-cov>=7",
   "ruff>=0.14",
